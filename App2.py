@@ -144,7 +144,15 @@ def run_gui():
     @magicgui(
         call_button="Run MedSAM2",
         auto_call=False,
-        output_path={"label": "Save mask to", "value": args.output_mask},
+        propagation_style={
+            "label": "Propagation method",
+            "choices": [
+                ("Default (prompt-first)", "default"),
+                ("Full (entire volume)", "full"),
+                ("Smart (prompt-based)", "prompt_based"),
+            ],
+            "value": "default",
+        },
         auto_box_from_mask={"label": "Auto-generate box prompts from segmentation", "value": True},
         auto_dense_prompt_from_mask={"label": "Auto-generate dense prompt from segmentation", "value": False},
         keep_largest_component={"label": "Keep largest 3D connected component", "value": True},
@@ -152,6 +160,7 @@ def run_gui():
     )
     def run_segmentation(
         output_path: str = "",
+        propagation_style: str = "default",
         auto_box_from_mask: bool = True,
         auto_dense_prompt_from_mask: bool = False,
         keep_largest_component: bool = True,
@@ -190,6 +199,7 @@ def run_gui():
                 p_low=args.p_low,
                 p_high=args.p_high,
                 threshold=args.threshold,
+                propagation_style=propagation_style,
             )
 
             if keep_largest_component:
@@ -222,13 +232,17 @@ def run_gui():
             raise
 
     @magicgui(
-        call_button="Save segmentation",
-        save_path={"label": "Save path", "value": args.output_mask},
+    call_button="Save segmentation",
+    save_name={"label": "File name", "value": "prediction.nii.gz"},
     )
-    def save_current_segmentation(save_path: str = ""):
+    def save_current_segmentation(save_name: str = "prediction.nii.gz"):
         try:
-            if save_path is None or save_path.strip() == "":
-                show_error("Please provide a save path.")
+            if save_name is None or save_name.strip() == "":
+                show_error("Please provide a file name.")
+                return
+
+            if not (save_name.lower().endswith(".nii") or save_name.lower().endswith(".nii.gz")):
+                show_error("File name must end with .nii or .nii.gz")
                 return
 
             current_mask = np.asarray(mask_layer.data > 0, dtype=np.uint8)
@@ -237,12 +251,17 @@ def run_gui():
                 show_error("Current segmentation is empty.")
                 return
 
+            output_dir = os.path.join(input_folder, "SAM_OUTPUT")
+            os.makedirs(output_dir, exist_ok=True)  # creates if not exists
+
+            save_path = os.path.join(output_dir, save_name)
+            
             save_mask_like_reference(current_mask, img_itk, save_path)
             show_info(f"Saved segmentation to {save_path}")
 
         except Exception as e:
             show_error(str(e))
-            raise
+            return
 
     push_to_inspect_btn = PushButton(text="Push to inspect layer")
 

@@ -13,6 +13,7 @@ def run_medsam2_inference_from_arrays(
     p_low: float = 1.0,
     p_high: float = 99.0,
     threshold: float = 0.0,
+    propagation_style: str = "default",
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
@@ -117,17 +118,58 @@ def run_medsam2_inference_from_arrays(
             points, point_labels, bbox, mask_input = prompts_by_slice[slice_idx]
             add_prompt_for_slice(inference_state, slice_idx, points, point_labels, bbox, mask_input)
 
-        print("Forward propagation...")
-        for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
-            mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
-            segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+        # Propagation strategies:
 
-        print("Backward propagation...")
-        for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
-            inference_state, reverse=True
-        ):
-            mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
-            segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+        #Default propagation: propagate forward and backward from the first prompted slice.
+        if propagation_style == "default":
+            print("Forward propagation (default)...")
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
+                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
+                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+
+            print("Backward propagation (default)...")
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state, reverse=True
+            ):
+                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
+                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+
+        #Full propagation: do a full forward and backward pass of propagation.
+        elif propagation_style == "full":
+            print("Forward propagation (full, from slice 0)...")
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state, start_frame_idx=0
+            ):
+                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
+                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+
+            print(f"Backward propagation (full, from slice {D - 1})...")
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state, start_frame_idx=D - 1, reverse=True
+            ):
+                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
+                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+
+        #Smart propagation: propagate forward from the first prompted slice and backwards from the last slice
+        elif propagation_style == "prompt_based":
+            start_fwd = min(valid_slice_indices)
+            start_bwd = max(valid_slice_indices)
+            print(f"Forward propagation (prompt_based, from slice {start_fwd})...")
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state, start_frame_idx=start_fwd
+            ):
+                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
+                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+
+            print(f"Backward propagation (prompt_based, from slice {start_bwd})...")
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state, start_frame_idx=start_bwd, reverse=True
+            ):
+                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
+                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+
+        else:
+            raise ValueError(f"Unknown propagation_style '{propagation_style}'. Choose from: 'default', 'full', 'smart'")
 
         predictor.reset_state(inference_state)
 
