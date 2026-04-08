@@ -152,8 +152,10 @@ def run_medsam2_inference_from_arrays(
 
         #Smart propagation: propagate forward from the first prompted slice and backwards from the last slice
         elif propagation_style == "prompt_based":
-            start_fwd = min(valid_slice_indices)
-            start_bwd = max(valid_slice_indices)
+            
+            start_fwd = min(valid_slice_indices) # first prompted slice
+            start_bwd = max(valid_slice_indices) # last prompted slice
+            
             print(f"Forward propagation (prompt_based, from slice {start_fwd})...")
             for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
                 inference_state, start_frame_idx=start_fwd

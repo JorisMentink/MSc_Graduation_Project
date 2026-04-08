@@ -1,5 +1,6 @@
 import os
 import argparse
+from pathlib import Path
 import numpy as np
 import SimpleITK as sitk
 import napari
@@ -32,7 +33,6 @@ def get_image_path_from_folder(input_folder: str) -> str:
         )
     return image_path
 
-
 def get_available_mask_files(input_folder: str) -> list[str]:
     if not os.path.isdir(input_folder):
         return []
@@ -46,14 +46,26 @@ def get_available_mask_files(input_folder: str) -> list[str]:
     nii_files.sort()
     return nii_files
 
-
 def run_gui():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
+    folder_group = parser.add_mutually_exclusive_group()
+    folder_group.add_argument(
         "--input_folder",
         type=str,
-        required=True,
+        default=None,
         help="Folder containing image.nii and optional mask .nii files",
+    )
+    folder_group.add_argument(
+        "--subject_index",
+        type=int,
+        default=None,
+        help="Subject index into data/LUNDPROBE/ExtendedSamples (integer).",
+    )
+    folder_group.add_argument(
+        "--subject_id",
+        type=str,
+        default=None,
+        help="Subject folder name inside data/LUNDPROBE/ExtendedSamples.",
     )
     parser.add_argument("--checkpoint", type=str, default="checkpoints/MedSAM2_latest.pt")
     parser.add_argument("--cfg", type=str, default="configs/sam2.1_hiera_t512.yaml")
@@ -64,7 +76,23 @@ def run_gui():
     parser.add_argument("--output_mask", type=str, default="", help="Optional output path for saved mask")
     args = parser.parse_args()
 
-    input_folder = args.input_folder
+    split_dir = Path("data") / "LUNDPROBE" / "ExtendedSamples"
+    subjects = sorted([p.name for p in split_dir.iterdir() if p.is_dir()])
+
+    if args.input_folder is None and args.subject_index is None and args.subject_id is None:
+        print("Available subjects (pass one of these):")
+        for i, name in enumerate(subjects):
+            print(f"  --subject_index {i:>3d}   --subject_id {name}")
+        parser.exit(0)
+
+    if args.subject_id is not None:
+        if args.subject_id not in subjects:
+            parser.error(f"Subject '{args.subject_id}' not found. Run without arguments to list all subjects.")
+        input_folder = str(split_dir / args.subject_id / "MR_StorT2")
+    elif args.subject_index is not None:
+        input_folder = str(split_dir / subjects[args.subject_index] / "MR_StorT2")
+    else:
+        input_folder = args.input_folder
     image_path = get_image_path_from_folder(input_folder)
     available_mask_files = get_available_mask_files(input_folder)
 
@@ -118,6 +146,40 @@ def run_gui():
         np.zeros_like(vol_u8, dtype=np.uint8),
         name="mask",
     )
+
+    available_prompt_files = sorted(
+        f for f in os.listdir(input_folder) if f.lower().endswith(".npz")
+    )
+
+    @magicgui(
+        call_button="Load point prompts (.npz)",
+        prompt_file={
+            "label": "Prompt file",
+            "choices": [""] + available_prompt_files,
+        },
+        replace_existing={"label": "Replace existing points", "value": True},
+    )
+    def load_point_prompts(prompt_file: str = "", replace_existing: bool = True):
+        try:
+            if not prompt_file or prompt_file.strip() == "":
+                show_error("Please select a prompt file.")
+                return
+            path = os.path.join(input_folder, prompt_file)
+            data = np.load(path)
+            pos_pts = data["positive"].astype(np.float32) if "positive" in data else np.empty((0, 3), dtype=np.float32)
+            neg_pts = data["negative"].astype(np.float32) if "negative" in data else np.empty((0, 3), dtype=np.float32)
+            if replace_existing:
+                pos_layer.data = pos_pts
+                neg_layer.data = neg_pts
+            else:
+                existing_pos = np.asarray(pos_layer.data, dtype=np.float32)
+                existing_neg = np.asarray(neg_layer.data, dtype=np.float32)
+                pos_layer.data = np.concatenate([existing_pos, pos_pts], axis=0) if len(existing_pos) else pos_pts
+                neg_layer.data = np.concatenate([existing_neg, neg_pts], axis=0) if len(existing_neg) else neg_pts
+            show_info(f"Loaded {len(pos_pts)} positive and {len(neg_pts)} negative prompts from {prompt_file}")
+        except Exception as e:
+            show_error(str(e))
+            raise
 
     @magicgui(
         call_button="Load dense mask prompt",
@@ -353,6 +415,7 @@ def run_gui():
         labels=False,
     )
 
+    viewer.window.add_dock_widget(load_point_prompts, area="right")
     viewer.window.add_dock_widget(load_mask_prompt, area="right")
     viewer.window.add_dock_widget(run_segmentation, area="right")
     viewer.window.add_dock_widget(manage_segmentation_panel, area="right", name="Manage segmentation")
