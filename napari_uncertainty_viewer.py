@@ -193,11 +193,11 @@ def compute_band_asymmetry_prompts_stack(
 def load_case_data(subject_index: int):
     """Load image, prediction, and uncertainty map for a subject."""
     project_root = Path.cwd()
-    data_root = project_root / "data" / "LUNDPROBE"
-    split = "ExtendedSamples"
+    data_root = project_root / "data" / "LUNDPROBE" / "ExtendedSamples" / "development"
+    split = None
     image_folder = "MR_StorT2"
 
-    split_dir = data_root / split
+    split_dir = data_root
     subjects = sorted([path.name for path in split_dir.iterdir() if path.is_dir()])
 
     subject_id = subjects[subject_index]

@@ -7,6 +7,7 @@ import napari
 from magicgui import magicgui
 from magicgui.widgets import PushButton, Container
 from napari.utils.notifications import show_info, show_error
+from napari.utils.colormaps import DirectLabelColormap
 
 from sam2.build_sam import build_sam2_video_predictor_npz
 
@@ -76,7 +77,7 @@ def run_gui():
     parser.add_argument("--output_mask", type=str, default="", help="Optional output path for saved mask")
     args = parser.parse_args()
 
-    split_dir = Path("data") / "LUNDPROBE" / "ExtendedSamples"
+    split_dir = Path("data") / "LUNDPROBE" / "ExtendedSamples" / "development"
     subjects = sorted([p.name for p in split_dir.iterdir() if p.is_dir()])
 
     if args.input_folder is None and args.subject_index is None and args.subject_id is None:
@@ -119,14 +120,14 @@ def run_gui():
     pos_layer = viewer.add_points(
         name="positive",
         ndim=3,
-        size=8,
+        size=4,
         face_color="lime",
     )
 
     neg_layer = viewer.add_points(
         name="negative",
         ndim=3,
-        size=8,
+        size=4,
         face_color="red",
     )
 
@@ -140,12 +141,39 @@ def run_gui():
     mask_prompt_layer = viewer.add_labels(
         np.zeros_like(vol_u8, dtype=np.uint8),
         name="mask_prompt",
+        opacity=0.55,
+    )
+    mask_prompt_layer.colormap = DirectLabelColormap(
+        color_dict={
+            0: (0, 0, 0, 0),            # transparent
+            1: (0.20, 0.45, 0.85, 1.0), # muted blue
+        }
+    )
+
+    gt_layer = viewer.add_labels(
+        np.zeros_like(vol_u8, dtype=np.uint8),
+        name="ground_truth",
+        opacity=0.60,
+    )
+    gt_layer.colormap = DirectLabelColormap(
+        color_dict={
+            0: (0, 0, 0, 0),            # transparent
+            1: (0.18, 0.62, 0.38, 1.0), # dark soft green
+        }
     )
 
     mask_layer = viewer.add_labels(
         np.zeros_like(vol_u8, dtype=np.uint8),
         name="mask",
+        opacity=0.60,
     )
+    mask_layer.colormap = DirectLabelColormap(
+        color_dict={
+            0: (0, 0, 0, 0),            # transparent
+            1: (0.78, 0.28, 0.28, 1.0), # dark soft red
+        }
+    )
+
 
     available_prompt_files = sorted(
         f for f in os.listdir(input_folder) if f.lower().endswith(".npz")
@@ -402,6 +430,29 @@ def run_gui():
             show_error(str(e))
             raise
 
+    @magicgui(
+    call_button="Load ground truth",
+    gt_file={
+        "label": "Ground truth file",
+        "choices": [""] + available_mask_files,
+    },
+    )
+    def load_ground_truth(gt_file: str = ""):
+        try:
+            if gt_file is None or gt_file.strip() == "":
+                show_error("Please select a ground truth file.")
+                return
+
+            gt_path = os.path.join(input_folder, gt_file)
+            loaded_gt = load_mask_like_reference(gt_path, vol.shape)
+            gt_layer.data = loaded_gt.astype(np.uint8)
+
+            show_info(f"Loaded ground truth from {gt_file}")
+
+        except Exception as e:
+            show_error(str(e))
+            raise
+
     manage_segmentation_panel = Container(
         widgets=[
             save_current_segmentation,
@@ -419,6 +470,7 @@ def run_gui():
     viewer.window.add_dock_widget(load_mask_prompt, area="right")
     viewer.window.add_dock_widget(run_segmentation, area="right")
     viewer.window.add_dock_widget(manage_segmentation_panel, area="right", name="Manage segmentation")
+    viewer.window.add_dock_widget(load_ground_truth, area="right")
     napari.run()
 
 
