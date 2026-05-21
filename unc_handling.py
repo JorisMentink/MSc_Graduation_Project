@@ -1,7 +1,7 @@
 from unittest import result
 from DataLoader import DataLoader
 import numpy as np
-from uncertainty_util import determine_band_thickness_mm_normals, determine_band_thickness_mm_normals, extract_bands, determine_band_thickness_mm_raycast, order_segmentation_pixels
+from uncertainty_util import determine_band_thickness_mm_normals, determine_band_thickness_mm_normals, extract_bands, determine_band_thickness_mm_raycast, order_segmentation_pixels, check_prompt_validity
 
 
 class UG_prompter():
@@ -159,6 +159,10 @@ class UG_prompter():
                         pixel_interval=1,
                         pixel_spacing=self.img_spacing)
 
+                if res is None:
+                    self.band_thickness_per_slice.append(0.0)
+                    continue
+
                 band = np.mean(res["inner_mm"] + res["outer_mm"])
                 self.band_thickness_per_slice.append(band)
 
@@ -277,6 +281,9 @@ class UG_prompter():
                 except ValueError:
                     continue
 
+                if results is None:
+                    continue
+
                 print(
                         z,
                         "n_results:", len(results),
@@ -284,10 +291,6 @@ class UG_prompter():
                         "max_inner:", max(results["inner_mm"]) if results else None,
                         "max_outer:", max(results["outer_mm"]) if results else None,
                     )
-                
-
-                if results is None:
-                    continue
 
                 #STORE NORMALS FOR LATER PLOTTING/ANALYSIS
                 self.normals_by_slice[z] = { "midpoints": np.asarray(results["pixel_yx"], dtype=float),
@@ -297,7 +300,8 @@ class UG_prompter():
                 selected_points_yx = []
                 selected_labels = []
 
-                for pixel in results["pixel_index"]:
+                for pixel in range(len(results["pixel_index"])):
+                    
                     mid_yx = results["pixel_yx"][pixel]
 
                     mid_mm = np.array([
@@ -321,10 +325,10 @@ class UG_prompter():
 
                     #TODO: make this work with a scalar dependent on uncertainty. absolute values are not fixed.
                     # Positive prompt inward
-                    pos_mm = mid_mm + inner_normal_yx * (6) #ABSOLUTE VALUE NOW. THIS SUCKS. LOL
+                    pos_mm = mid_mm + inner_normal_yx * (2 * inner_mm)   #(6) #ABSOLUTE VALUE NOW. THIS SUCKS. LOL
 
                     # Negative prompt outward
-                    neg_mm = mid_mm + outer_normal_yx * (12) # ABSOLUTE VALUE NOW. THIS SUCKS. LOL
+                    neg_mm = mid_mm + outer_normal_yx * (4 * outer_mm)   #(12) # ABSOLUTE VALUE NOW. THIS SUCKS. LOL
 
                     pos_yx = np.array([
                         pos_mm[0] / self.img_spacing[1],
@@ -337,14 +341,21 @@ class UG_prompter():
                     ])
 
 
-                    for point_yx, label in [(pos_yx, 1), (neg_yx, 0)]:
-                        y, x = point_yx
+                    # for point_yx, label in [(pos_yx, 1), (neg_yx, 0)]:
+                    #     y, x = point_yx
 
-                        if y < 0 or y >= seg.shape[0] or x < 0 or x >= seg.shape[1]:
-                            continue
+                    #     if y < 0 or y >= seg.shape[0] or x < 0 or x >= seg.shape[1]:
+                    #         continue
 
-                        selected_points_yx.append(point_yx)
-                        selected_labels.append(label)
+                    #     selected_points_yx.append(point_yx)
+                    #     selected_labels.append(label)
+
+                    #NEW PROMPT VALIDITY CHECKS.
+                    if not check_prompt_validity(pos_yx, neg_yx, seg, unc_bin):
+                        continue
+
+                    selected_points_yx.extend([pos_yx, neg_yx])
+                    selected_labels.extend([1, 0])
 
                     if len(selected_points_yx) >= max_prompts_per_slice:
                         break
@@ -430,10 +441,10 @@ class UG_prompter():
                     ])
 
                     # Positive prompt inside segmentation
-                    pos_mm = center_of_mass_mm + direction_yx * max(seg_mm[num] - 6.0, 0.0)
+                    pos_mm = center_of_mass_mm + direction_yx * max(seg_mm[num] - 2*inner_mm[num], 0.0) #Adaptive on uncertainty band, snaps to centerpoint if band is too thick.
 
                     # Negative prompt outside segmentation
-                    neg_mm = center_of_mass_mm + direction_yx * (seg_mm[num] + 12.0)
+                    neg_mm = center_of_mass_mm + direction_yx * (seg_mm[num] + 2*outer_mm[num])
 
                     # Convert mm coordinates back to pixel coordinates: (y_mm, x_mm) -> (y_px, x_px)
                     pos_yx = np.array([
@@ -446,14 +457,21 @@ class UG_prompter():
                         neg_mm[1] / self.img_spacing[2],
                     ])
 
-                    for point_yx, label in [(pos_yx, 1), (neg_yx, 0)]:
-                        y, x = point_yx
+                    # for point_yx, label in [(pos_yx, 1), (neg_yx, 0)]:
+                    #     y, x = point_yx
 
-                        if y < 0 or y >= seg.shape[0] or x < 0 or x >= seg.shape[1]:
-                            continue
+                    #     if y < 0 or y >= seg.shape[0] or x < 0 or x >= seg.shape[1]:
+                    #         continue
 
-                        selected_points_yx.append(point_yx)
-                        selected_labels.append(label)
+                    #     selected_points_yx.append(point_yx)
+                    #     selected_labels.append(label)
+
+
+                    if not check_prompt_validity(pos_yx, neg_yx, seg, unc_bin):
+                        continue
+
+                    selected_points_yx.extend([pos_yx, neg_yx])
+                    selected_labels.extend([1, 0])
 
                     if len(selected_points_yx) >= max_prompts_per_slice:
                         break

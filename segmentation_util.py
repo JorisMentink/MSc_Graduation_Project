@@ -32,6 +32,7 @@ def run_medsam2_inference_from_arrays(
     p_high: float = 99.0,
     threshold: float = 0.0,
     propagation_style: str = "default",
+    nr_propagation_slices: int = 2,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
@@ -200,10 +201,140 @@ def run_medsam2_inference_from_arrays(
             ):
                 mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
                 segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+        
+        elif propagation_style == "central_start":
+            
+            start_mid = sorted(valid_slice_indices)[len(valid_slice_indices) // 2]
+
+            print(f"Forward propagation (from middle slice {start_mid})...")
+
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state,
+                start_frame_idx=start_mid
+            ):
+                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
+                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+
+            print(f"Backward propagation (from middle slice {start_mid})...")
+
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state,
+                start_frame_idx=start_mid,
+                reverse=True
+            ):
+                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
+                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+
+
+        elif propagation_style == "central_partitions":
+
+            valid_slice_indices = sorted(valid_slice_indices)
+
+
+            if nr_propagation_slices < 1:
+                raise ValueError(f"Number of propagation slices must be at least 1, got {nr_propagation_slices}.")
+            elif nr_propagation_slices > len(valid_slice_indices):
+                print(
+                    f"Requested {nr_propagation_slices} start slices, but only "
+                    f"{len(valid_slice_indices)} prompted slices are available. "
+                    f"Using all prompted slices instead."
+                )
+                start_slices = valid_slice_indices
+            else:
+                positions = np.linspace(
+                    0,
+                    len(valid_slice_indices) - 1,
+                    nr_propagation_slices + 2
+                )[1:-1]
+
+                selected_indices = [
+                    valid_slice_indices[int(round(pos))]
+                    for pos in positions
+                ]
+
+                start_slices = sorted(set(selected_indices))
+                print(f"Using central partition start slices: {start_slices}")
+
+            logit_sum = np.zeros((D, H, W), dtype=np.float32)
+            logit_count = np.zeros((D, H, W), dtype=np.float32)
+
+            for start_slice in start_slices:
+
+                print(f"Forward propagation from slice {start_slice}...")
+                for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                    inference_state,
+                    start_frame_idx=start_slice
+                ):
+                    logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
+                    logit_sum[out_frame_idx] += logit2d
+                    logit_count[out_frame_idx] += 1
+
+                print(f"Backward propagation from slice {start_slice}...")
+                for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                    inference_state,
+                    start_frame_idx=start_slice,
+                    reverse=True
+                ):
+                    logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
+                    logit_sum[out_frame_idx] += logit2d
+                    logit_count[out_frame_idx] += 1
+
+            valid_logits = logit_count > 0
+
+            avg_logits = np.zeros_like(logit_sum)
+            avg_logits[valid_logits] = logit_sum[valid_logits] / logit_count[valid_logits]
+
+            segs_3d = (avg_logits > threshold).astype(np.uint8)
 
         else:
-            raise ValueError(f"Unknown propagation_style '{propagation_style}'. Choose from: 'default', 'full', 'prompt_based'.")
+            raise ValueError(f"Unknown propagation_style '{propagation_style}'. Choose from: 'default', 'full', 'prompt_based', 'central_start', 'central_partitions'.")
 
         predictor.reset_state(inference_state)
 
     return segs_3d
+
+
+def split_prompts_to_sets(prompts_by_slice):
+    
+    dense_prompts = {}
+    point_prompts = {}
+    combined_prompts = {}
+
+    for z, prompt in prompts_by_slice.items():
+
+        has_points = prompt.get("points") is not None
+        has_mask = prompt.get("mask_input") is not None
+        has_bbox = prompt.get("bbox") is not None
+
+        # Dense prompt only
+        if has_mask:
+            dense_prompts[z] = {
+                "points": None,
+                "point_labels": None,
+                "bbox": None,
+                "mask_input": prompt["mask_input"],
+            }
+
+        # Point prompts only
+        if has_points:
+            point_prompts[z] = {
+                "points": prompt["points"],
+                "point_labels": prompt["point_labels"],
+                "bbox": None,
+                "mask_input": None,
+            }
+
+        # Combined prompts
+        if has_points or has_mask or has_bbox:
+            combined_prompts[z] = {
+                "points": prompt["points"],
+                "point_labels": prompt["point_labels"],
+                "bbox": prompt["bbox"],
+                "mask_input": prompt["mask_input"],
+            }
+
+    return {
+        "dense": dense_prompts,
+        "points": point_prompts,
+        "combined": combined_prompts,
+    }

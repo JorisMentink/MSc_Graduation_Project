@@ -20,8 +20,10 @@ class Segmentation:
 
         self.parentfolder = data.parentfolder
         self.subject_nr = data.subject_nr
+        self.subject_name = data.subject_name
         self.volume_of_interest = data.volume_of_interest
         self.verbose = data.verbose
+
 
         self.img = data.img
         self.mask = data.mask
@@ -139,7 +141,7 @@ class Segmentation:
         return self.prompts_by_slice
 
 
-    def run_segmentation(self):
+    def run_segmentation(self,propagation_style="default", nr_propagation_slices=2):
         self.predicted_seg = run_medsam2_inference_from_arrays(
             vol=self.img,
             predictor=self.predictor,
@@ -148,7 +150,53 @@ class Segmentation:
             p_low=1.0,
             p_high=99.0,
             threshold=0.0,
-            propagation_style="default",
+            propagation_style=propagation_style,
+            nr_propagation_slices = nr_propagation_slices,
         )
 
         return self.predicted_seg
+
+    def remove_distant_slices(self, tolerance_frames=3):
+        """
+        Remove predicted segmentation slices that are more than tolerance_frames
+        away from any slice containing dense mask pixels.
+        """
+
+        if not hasattr(self, "predicted_seg"):
+            raise AttributeError(
+                "No predicted segmentation found. Run run_segmentation() first."
+            )
+
+        if self.mask is None or self.mask.sum() == 0:
+            raise ValueError("No valid dense mask found.")
+
+        # Find z-slices where dense mask exists
+        dense_slices = np.where(self.mask.astype(bool).any(axis=(1, 2)))[0]
+
+        if len(dense_slices) == 0:
+            raise ValueError("Dense mask contains no foreground slices.")
+
+        z_min = max(0, dense_slices.min() - tolerance_frames)
+        z_max = min(self.predicted_seg.shape[0] - 1, dense_slices.max() + tolerance_frames)
+
+        # Create cleaned prediction
+        cleaned_seg = np.zeros_like(self.predicted_seg)
+        cleaned_seg[z_min:z_max + 1] = self.predicted_seg[z_min:z_max + 1]
+
+        self.predicted_seg = cleaned_seg
+
+        if self.verbose:
+            print(
+                f"Kept slices {z_min} to {z_max}. "
+                f"Removed predicted segmentation outside dense mask ±{tolerance_frames} slices."
+            )
+
+        return self.predicted_seg
+
+
+    def create_prompt_sets(self):
+        """Function that creates different sets of prompts for multi-propagation segmentation?"""
+
+        
+        
+        pass

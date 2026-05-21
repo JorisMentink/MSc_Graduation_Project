@@ -16,11 +16,12 @@ class Evaluator:
     - a Segmentation instance
     """
 
-    def __init__(self, pred=None, gt=None, spacing=(1.0, 1.0, 1.0), segmentation: Segmentation = None):
+    def __init__(self, pred=None, gt=None, subject_name = "x", spacing=(1.0, 1.0, 1.0), segmentation: Segmentation = None):
         if segmentation is not None:
             self.pred = segmentation.predicted_seg.astype(bool)
             self.gt = segmentation.gt.astype(bool)
             self.spacing = tuple(segmentation.img_spacing)
+            self.subject_name = segmentation.subject_name
         else:
             if pred is None or gt is None:
                 raise ValueError("Provide either a segmentation or both pred and gt.")
@@ -28,6 +29,7 @@ class Evaluator:
             self.pred = pred.astype(bool)
             self.gt = gt.astype(bool)
             self.spacing = tuple(spacing)
+            self.subject_name = subject_name
 
         if self.pred.shape != self.gt.shape:
             raise ValueError(
@@ -132,6 +134,7 @@ class Evaluator:
 
     def compute_all(self, surface_dice_tol=1.0):
         return {
+            "subject name": self.subject_name,
             "HD_mm": self.hausdorff_distance(),
             "HD95_mm": self.hd95(),
             "MSD_mm": self.msd(),

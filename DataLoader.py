@@ -18,6 +18,8 @@ class DataLoader():
         self.subjects = sorted([p.name for p in self.parentfolder.iterdir() if p.is_dir()])
         self.subjectfolder = self.parentfolder / str(self.subjects[subject_nr]) / "MR_StorT2"
         
+        self.subject_name = str(self.subjects[subject_nr])
+
         #Load paths for image, mask and uncertainty map -following out-of-the-box LUNDPROBE formatting
         img_path = self.subjectfolder / "image.nii.gz"
         

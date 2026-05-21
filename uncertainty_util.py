@@ -211,7 +211,6 @@ def determine_band_thickness_mm_raycast(
         outer_mm.append(outer_len)
         band_total_mm.append(total_len)
 
-
     return {
         "center_of_mass_px": (cy, cx),
         "center_of_mass_mm": (cy_mm, cx_mm),
@@ -247,8 +246,8 @@ def determine_band_thickness_mm_normals(
     n_pixels = len(ordered_edge_pixels)
     H, W = seg.shape
 
-    if n_pixels == 0:
-        return []
+    if n_pixels < (2 * interpix_dist + 1):
+        return None
 
     pixel_interval = max(1, int(pixel_interval))
     interpix_dist = max(1, int(interpix_dist))
@@ -263,6 +262,7 @@ def determine_band_thickness_mm_normals(
     res_total_mm = []
 
     results = []
+    print(f"there are {n_pixels} many pixels")
 
     for pixel_index in range(0, n_pixels, pixel_interval):
         
@@ -344,18 +344,42 @@ def determine_band_thickness_mm_normals(
         res_inner_mm.append(inner_mm)
         res_total_mm.append(total_mm)
 
+    # if len(res_total_mm) == 0:
+    #     return None
+
     return {
             "pixel_index": res_pixel_index,
             "pixel_yx": res_pixel_yx,
             "tangent_yx": res_tangent_yx,
             "outer_normal_yx": res_outer_normal_yx,
             "inner_normal_yx": res_inner_normal_yx,
-            "outer_mm": res_outer_mm,
-            "inner_mm": res_inner_mm,
-            "total_mm": res_total_mm,
+            "outer_mm": np.array(res_outer_mm),
+            "inner_mm": np.array(res_inner_mm),
+            "total_mm": np.array(res_total_mm),
         }
 
 
+def check_prompt_validity(pos_yx, neg_yx, seg, unc_bin):
+    """
+    Function that checks if generated prompt pair is valid according to criteria:
+    1. All prompts must be within the bounds of the image.
+    2. All positive prompts must be inside the segmentation, but not in the uncertainty band.
+    3. All negative prompts must be outside the segmentation, and not in the uncertainty band
+
+    Returns Boolean indicating if prompt pair is valid or not.
+    """
+    H, W = seg.shape
+    py, px = np.round(pos_yx).astype(int)
+    ny, nx = np.round(neg_yx).astype(int)
+
+    return (
+        0 <= py < H and 0 <= px < W and #Check if positive point is within image bounds
+        0 <= ny < H and 0 <= nx < W and #Check if negative point is within image bounds
+        seg[py, px] and                 #Check if positive point is on segmentation edge
+        not unc_bin[py, px] and         #Check if positive point is not in uncertainty band
+        not seg[ny, nx] and             #Check if negative point is outside segmentation
+        not unc_bin[ny, nx]             #Check if negative point is not in uncertainty band 
+    )
 
 
 
