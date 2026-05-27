@@ -172,49 +172,48 @@ class UG_prompter():
         
         print(self.band_thickness_per_slice)
 
-    def generate_prompts_boxes_and_points(self, band_threshold):
+    def generate_prompts_boxes(self, band_threshold=0, pad=0):
         """
+        Generate SAM2 prompts containing:
+        - bounding box around thresholded uncertainty region
+        - dense mask prompt from self.mask
         """
+
         prompts_by_slice = {}
 
         for z in range(self.mask.shape[0]):
-            # Skip slices without a valid band thickness
+
             if z >= len(self.band_thickness_per_slice):
                 continue
 
             if self.band_thickness_per_slice[z] <= band_threshold:
                 continue
 
-            seg = self.mask[z]
             unc = self.unc_map_bin[z].astype(bool)
 
-            # Skip empty segmentation or empty uncertainty map
-            if not seg.any() or not unc.any():
+            if not unc.any():
                 continue
 
-            # Positive point at segmentation center
-            ys_seg, xs_seg = np.where(seg)
-            cy = int(np.round(np.mean(ys_seg)))
-            cx = int(np.round(np.mean(xs_seg)))
-
-            positive_points = np.array([[cx, cy]], dtype=np.int32)  # (x, y)
-
-            # Bounding box around full thresholded uncertainty map
             ys_unc, xs_unc = np.where(unc)
-            y0 = int(np.min(ys_unc))
-            y1 = int(np.max(ys_unc))
-            x0 = int(np.min(xs_unc))
-            x1 = int(np.max(xs_unc))
 
-            boxes = np.array([[x0, y0, x1, y1]], dtype=np.int32)
+            H, W = unc.shape
+
+            x0 = max(0, int(xs_unc.min()) - pad)
+            x1 = min(W - 1, int(xs_unc.max()) + pad)
+            y0 = max(0, int(ys_unc.min()) - pad)
+            y1 = min(H - 1, int(ys_unc.max()) + pad)
+
+            bbox = np.array([x0, y0, x1, y1], dtype=np.float32)
 
             prompts_by_slice[z] = {
-                "positive_points": positive_points,
-                "boxes": boxes,
+                "points": None,
+                "point_labels": None,
+                "bbox": bbox,
+                "mask_input": self.mask[z].astype(np.uint8),
             }
 
         self.prompts_by_slice = prompts_by_slice
-        return self.prompts_by_slice
+        return prompts_by_slice
 
 
     def generate_prompts_nietjes(
@@ -325,10 +324,10 @@ class UG_prompter():
 
                     #TODO: make this work with a scalar dependent on uncertainty. absolute values are not fixed.
                     # Positive prompt inward
-                    pos_mm = mid_mm + inner_normal_yx * (2 * inner_mm)   #(6) #ABSOLUTE VALUE NOW. THIS SUCKS. LOL
+                    pos_mm = mid_mm + inner_normal_yx * (inner_mm + 2)   #(6) #ABSOLUTE VALUE NOW. THIS SUCKS. LOL
 
                     # Negative prompt outward
-                    neg_mm = mid_mm + outer_normal_yx * (4 * outer_mm)   #(12) # ABSOLUTE VALUE NOW. THIS SUCKS. LOL
+                    neg_mm = mid_mm + outer_normal_yx * (outer_mm + 2)   #(12) # ABSOLUTE VALUE NOW. THIS SUCKS. LOL
 
                     pos_yx = np.array([
                         pos_mm[0] / self.img_spacing[1],
@@ -339,16 +338,6 @@ class UG_prompter():
                         neg_mm[0] / self.img_spacing[1],
                         neg_mm[1] / self.img_spacing[2],
                     ])
-
-
-                    # for point_yx, label in [(pos_yx, 1), (neg_yx, 0)]:
-                    #     y, x = point_yx
-
-                    #     if y < 0 or y >= seg.shape[0] or x < 0 or x >= seg.shape[1]:
-                    #         continue
-
-                    #     selected_points_yx.append(point_yx)
-                    #     selected_labels.append(label)
 
                     #NEW PROMPT VALIDITY CHECKS.
                     if not check_prompt_validity(pos_yx, neg_yx, seg, unc_bin):
@@ -441,10 +430,10 @@ class UG_prompter():
                     ])
 
                     # Positive prompt inside segmentation
-                    pos_mm = center_of_mass_mm + direction_yx * max(seg_mm[num] - 2*inner_mm[num], 0.0) #Adaptive on uncertainty band, snaps to centerpoint if band is too thick.
+                    pos_mm = center_of_mass_mm + direction_yx * max(seg_mm[num] - (inner_mm[num]+2), 0.0) #Adaptive on uncertainty band, snaps to centerpoint if band is too thick.
 
                     # Negative prompt outside segmentation
-                    neg_mm = center_of_mass_mm + direction_yx * (seg_mm[num] + 2*outer_mm[num])
+                    neg_mm = center_of_mass_mm + direction_yx * (seg_mm[num] + (outer_mm[num]+2))
 
                     # Convert mm coordinates back to pixel coordinates: (y_mm, x_mm) -> (y_px, x_px)
                     pos_yx = np.array([
@@ -456,16 +445,6 @@ class UG_prompter():
                         neg_mm[0] / self.img_spacing[1],
                         neg_mm[1] / self.img_spacing[2],
                     ])
-
-                    # for point_yx, label in [(pos_yx, 1), (neg_yx, 0)]:
-                    #     y, x = point_yx
-
-                    #     if y < 0 or y >= seg.shape[0] or x < 0 or x >= seg.shape[1]:
-                    #         continue
-
-                    #     selected_points_yx.append(point_yx)
-                    #     selected_labels.append(label)
-
 
                     if not check_prompt_validity(pos_yx, neg_yx, seg, unc_bin):
                         continue

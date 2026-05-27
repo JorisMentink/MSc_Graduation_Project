@@ -1,6 +1,6 @@
 from DataLoader import DataLoader
 from sam2.build_sam import build_sam2_video_predictor_npz
-from segmentation_util import run_medsam2_inference_from_arrays
+from segmentation_util import run_medsam2_inference_from_arrays, split_prompts_to_sets
 import numpy as np
 
 class Segmentation:
@@ -142,7 +142,7 @@ class Segmentation:
 
 
     def run_segmentation(self,propagation_style="default", nr_propagation_slices=2):
-        self.predicted_seg = run_medsam2_inference_from_arrays(
+        self.predicted_seg, self.predicted_logits = run_medsam2_inference_from_arrays(
             vol=self.img,
             predictor=self.predictor,
             image_size=512,
@@ -194,9 +194,60 @@ class Segmentation:
         return self.predicted_seg
 
 
-    def create_prompt_sets(self):
-        """Function that creates different sets of prompts for multi-propagation segmentation?"""
+    def run_segmentation_sets(self, propagation_style="default", nr_propagation_slices=2, weighting_strategy="average", weighting_list=None, threshold=0.0, bbox_prompts_by_slice=None):
+        """Run segmentation for different prompt sets and combine results using specified logit fusion strategy.
+        prompt sets are generated via split_prompts_to_sets, imported from segmentation_util.py"""
 
-        
-        
-        pass
+        self.prompt_sets = split_prompts_to_sets(self.prompts_by_slice, bbox_prompts_by_slice)
+        logits_per_set = []
+
+        #Loop through all prompt sets and run individual segmentations
+        for set_name, prompt_set in self.prompt_sets.items():
+            
+            print(f"Running segmentation for prompt set '{set_name}' with slices: {list(prompt_set.keys())}")
+
+            pred_seg, pred_logits = run_medsam2_inference_from_arrays(
+                vol=self.img,
+                predictor=self.predictor,
+                image_size=512,
+                prompts_by_slice=prompt_set,
+                p_low=1.0,
+                p_high=99.0,
+                threshold=threshold,
+                propagation_style=propagation_style,
+                nr_propagation_slices=nr_propagation_slices,
+            )
+
+            #Store logits for every prompt set for later fusion
+            logits_per_set.append(pred_logits)
+
+        #Basic, equal weighted logit averaging.
+        if weighting_strategy == "average":
+            final_logits = np.mean(logits_per_set, axis=0)
+
+        elif weighting_strategy == "custom":
+            
+            if weighting_list is None:
+                raise ValueError("weighting_list must be provided when weighting_strategy='custom'.")
+            
+            if not np.isclose(sum(weighting_list), 1.0): #Used np.isclose in stead of == to account for precise floats being weird.
+                raise ValueError(f"weighting_list must sum to 1.0, but sums to {sum(weighting_list)}.")
+
+            if len(weighting_list) != len(logits_per_set):
+                raise ValueError(
+                    f"weighting_list has length {len(weighting_list)}, "
+                    f"but {len(logits_per_set)} prompt sets were run."
+                )
+
+            final_logits = np.zeros_like(logits_per_set[0], dtype=np.float32)
+
+            for nr, weight_factor in enumerate(weighting_list):
+                final_logits += logits_per_set[nr] * weight_factor
+
+        else:
+            raise ValueError(f"Unknown weighting_strategy: {weighting_strategy}")
+
+        self.predicted_seg = (final_logits > threshold).astype(np.uint8)
+        self.predicted_logits = final_logits
+
+        return self.predicted_seg, self.predicted_logits

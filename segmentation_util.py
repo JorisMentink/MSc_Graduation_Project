@@ -70,6 +70,9 @@ def run_medsam2_inference_from_arrays(
     )
 
     segs_3d = np.zeros((D, H, W), dtype=np.uint8)
+    #For returning logits together with thresholded segmentation.
+    logits_3d = np.zeros((D, H, W), dtype=np.float32)
+    logit_count = np.zeros((D, H, W), dtype=np.float32)
 
     def has_valid_prompt(points, point_labels, bbox, mask_input):
         has_points = points is not None and point_labels is not None and len(points) > 0
@@ -156,31 +159,43 @@ def run_medsam2_inference_from_arrays(
         if propagation_style == "default":
             print("Forward propagation (default)...")
             for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
-                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
-                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+                
+                logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
+                logits_3d[out_frame_idx] += logit2d
+                logit_count[out_frame_idx] += 1
 
             print("Backward propagation (default)...")
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
-                inference_state, reverse=True
-            ):
-                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
-                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, reverse=True):
+
+                logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
+                logits_3d[out_frame_idx] += logit2d
+                logit_count[out_frame_idx] += 1
+            
+            #Combine logits via averaging if relevant.
+            valid = logit_count > 0
+            logits_3d[valid] = logits_3d[valid] / logit_count[valid]
+            segs_3d = (logits_3d > threshold).astype(np.uint8)
 
         #Full propagation: do a full forward and backward pass of propagation.
         elif propagation_style == "full":
             print("Forward propagation (full, from slice 0)...")
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
-                inference_state, start_frame_idx=0
-            ):
-                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
-                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=0):
+                
+                logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
+                logits_3d[out_frame_idx] += logit2d
+                logit_count[out_frame_idx] += 1
 
             print(f"Backward propagation (full, from slice {D - 1})...")
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
-                inference_state, start_frame_idx=D - 1, reverse=True
-            ):
-                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
-                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=D - 1, reverse=True):
+                
+                logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
+                logits_3d[out_frame_idx] += logit2d
+                logit_count[out_frame_idx] += 1
+
+            #Combine logits via averaging if relevant.
+            valid = logit_count > 0
+            logits_3d[valid] = logits_3d[valid] / logit_count[valid]
+            segs_3d = (logits_3d > threshold).astype(np.uint8)
 
         #Smart propagation: propagate forward from the first prompted slice and backwards from the last slice
         elif propagation_style == "prompt_based":
@@ -189,43 +204,52 @@ def run_medsam2_inference_from_arrays(
             start_bwd = max(valid_slice_indices) # last prompted slice
             
             print(f"Forward propagation (prompt_based, from slice {start_fwd})...")
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
-                inference_state, start_frame_idx=start_fwd
-            ):
-                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
-                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=start_fwd):
+                
+                logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
+                logits_3d[out_frame_idx] += logit2d
+                logit_count[out_frame_idx] += 1
 
             print(f"Backward propagation (prompt_based, from slice {start_bwd})...")
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
-                inference_state, start_frame_idx=start_bwd, reverse=True
-            ):
-                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
-                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=start_bwd, reverse=True):
+                
+                logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
+                logits_3d[out_frame_idx] += logit2d
+                logit_count[out_frame_idx] += 1
+                
+            #Combine logits via averaging if relevant.
+            valid = logit_count > 0
+            logits_3d[valid] = logits_3d[valid] / logit_count[valid]
+            segs_3d = (logits_3d > threshold).astype(np.uint8)
+            
         
+        #Central propagation: propagate forward and backward from a central slice (e.g. middle slice or middle prompted slice).
         elif propagation_style == "central_start":
             
             start_mid = sorted(valid_slice_indices)[len(valid_slice_indices) // 2]
 
             print(f"Forward propagation (from middle slice {start_mid})...")
 
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
-                inference_state,
-                start_frame_idx=start_mid
-            ):
-                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
-                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state,start_frame_idx=start_mid):
+                
+                logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
+                logits_3d[out_frame_idx] += logit2d
+                logit_count[out_frame_idx] += 1
 
             print(f"Backward propagation (from middle slice {start_mid})...")
 
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
-                inference_state,
-                start_frame_idx=start_mid,
-                reverse=True
-            ):
-                mask2d = (out_mask_logits[0] > threshold).detach().cpu().numpy()[0].astype(np.uint8)
-                segs_3d[out_frame_idx] = np.maximum(segs_3d[out_frame_idx], mask2d)
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state,start_frame_idx=start_mid,reverse=True):
+                
+                logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
+                logits_3d[out_frame_idx] += logit2d
+                logit_count[out_frame_idx] += 1
 
+            #Combine logits via averaging if relevant.
+            valid = logit_count > 0
+            logits_3d[valid] = logits_3d[valid] / logit_count[valid]
+            segs_3d = (logits_3d > threshold).astype(np.uint8)
 
+        #central_partitions propagation: select multiple central slices (e.g. 2 or 3) as start points for propagation, by selecting the most central prompted slices. Propagate forward and backward from each of these central slices and combine results (e.g. by taking union of predicted masks).
         elif propagation_style == "central_partitions":
 
             valid_slice_indices = sorted(valid_slice_indices)
@@ -241,17 +265,9 @@ def run_medsam2_inference_from_arrays(
                 )
                 start_slices = valid_slice_indices
             else:
-                positions = np.linspace(
-                    0,
-                    len(valid_slice_indices) - 1,
-                    nr_propagation_slices + 2
-                )[1:-1]
-
-                selected_indices = [
-                    valid_slice_indices[int(round(pos))]
-                    for pos in positions
-                ]
-
+                
+                positions = np.linspace(0,len(valid_slice_indices) - 1,nr_propagation_slices + 2)[1:-1]
+                selected_indices = [valid_slice_indices[int(round(pos))]for pos in positions]
                 start_slices = sorted(set(selected_indices))
                 print(f"Using central partition start slices: {start_slices}")
 
@@ -284,17 +300,18 @@ def run_medsam2_inference_from_arrays(
             avg_logits = np.zeros_like(logit_sum)
             avg_logits[valid_logits] = logit_sum[valid_logits] / logit_count[valid_logits]
 
-            segs_3d = (avg_logits > threshold).astype(np.uint8)
+            logits_3d = avg_logits
+            segs_3d = (logits_3d > threshold).astype(np.uint8)
 
         else:
             raise ValueError(f"Unknown propagation_style '{propagation_style}'. Choose from: 'default', 'full', 'prompt_based', 'central_start', 'central_partitions'.")
 
         predictor.reset_state(inference_state)
 
-    return segs_3d
+    return segs_3d, logits_3d
 
 
-def split_prompts_to_sets(prompts_by_slice):
+def split_prompts_to_sets(prompts_by_slice,bbox_prompts_by_slice):
     
     dense_prompts = {}
     point_prompts = {}
@@ -337,4 +354,5 @@ def split_prompts_to_sets(prompts_by_slice):
         "dense": dense_prompts,
         "points": point_prompts,
         "combined": combined_prompts,
+        "bbox": bbox_prompts_by_slice,
     }
