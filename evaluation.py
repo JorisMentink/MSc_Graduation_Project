@@ -48,7 +48,33 @@ class Evaluator:
         self.d_pred_to_gt = None
         self.d_gt_to_pred = None
 
+        self.crop_to_foreground(margin=30)
+
         self._compute_surface_distances()
+
+    def crop_to_foreground(self, margin=30):
+        """
+        Cropping function to remove irrelevant background. Speeds up surface distance compute immensely.
+        """
+
+        fg = self.pred | self.gt #Computes relevant pixels, as union of prediction and gt
+
+        z, y, x = np.where(fg) #Finds indices of relevant pixels
+
+        #Compute bounding box around relevant pixels. Adds margin cause perfect cropping stresses me out :)
+        z0 = max(z.min() - margin, 0)
+        z1 = min(z.max() + margin + 1, self.pred.shape[0])
+
+        y0 = max(y.min() - margin, 0)
+        y1 = min(y.max() + margin + 1, self.pred.shape[1])
+
+        x0 = max(x.min() - margin, 0)
+        x1 = min(x.max() + margin + 1, self.pred.shape[2])
+
+        #Cropping
+        self.pred = self.pred[z0:z1, y0:y1, x0:x1]
+        self.gt   = self.gt[z0:z1, y0:y1, x0:x1]
+
 
     def get_surface(self, mask):
         return mask & ~binary_erosion(mask)
@@ -78,7 +104,7 @@ class Evaluator:
 
     def msd(self):
         """
-        Mean surface distance from prediction surface to ground truth surface.
+        Mean surface distance from prediction surface to ground truth surface.k
         This is one-directional.
         """
         return np.mean(self.d_pred_to_gt)
@@ -146,6 +172,110 @@ class Evaluator:
             "AbsVolumeDifference_mm3": self.absolute_volume_difference(),
             "RelativeVolumeDifference_percent": self.relative_volume_difference(),
         }
+
+
+def compare_to_recontours(
+    pred_seg,
+    recontours,
+    spacing=(1.0, 1.0, 1.0),
+    subject_name="x",
+    observer_names=None,
+    surface_dice_tol=1.0,
+):
+
+    if observer_names is None:
+        observer_names = [f"Observer_{i+1}" for i in range(len(recontours))]
+
+    pred_seg = pred_seg.astype(bool)
+    recontours = [r.astype(bool) for r in recontours]
+
+    rows = []
+
+    def evaluate(seg_a, seg_b, name_a, name_b, group):
+
+        evaluator = Evaluator(
+            pred=seg_a,
+            gt=seg_b,
+            spacing=spacing,
+            subject_name=subject_name,
+        )
+
+        metrics = evaluator.compute_all(surface_dice_tol)
+
+        metrics["Group"] = group
+        metrics["Comparison"] = f"{name_a} vs {name_b}"
+
+        return metrics
+
+    # Clinician vs clinician
+    for i in range(len(recontours)):
+        for j in range(i + 1, len(recontours)):
+            rows.append(
+                evaluate(
+                    recontours[i],
+                    recontours[j],
+                    observer_names[i],
+                    observer_names[j],
+                    "Clinician vs clinician",
+                )
+            )
+
+    # Prediction vs clinician
+    for obs_seg, obs_name in zip(recontours, observer_names):
+        rows.append(
+            evaluate(
+                pred_seg,
+                obs_seg,
+                "Prediction",
+                obs_name,
+                "Prediction vs clinician",
+            )
+        )
+
+    # Consensus
+    vote_map = np.sum(np.stack(recontours, axis=0), axis=0)
+    majority_threshold = int(np.ceil(len(recontours) / 2))
+    consensus = vote_map >= majority_threshold
+
+    # Clinician vs consensus
+    for obs_seg, obs_name in zip(recontours, observer_names):
+        rows.append(
+            evaluate(
+                obs_seg,
+                consensus,
+                obs_name,
+                "Consensus",
+                "Clinician vs consensus",
+            )
+        )
+
+    # Prediction vs consensus
+    rows.append(
+        evaluate(
+            pred_seg,
+            consensus,
+            "Prediction",
+            "Consensus",
+            "Prediction vs consensus",
+        )
+    )
+
+    results_df = pd.DataFrame(rows)
+
+    cols = [
+        "Group",
+        "Comparison",
+        f"SurfaceDice@{surface_dice_tol}mm",
+        "ASSD_mm",
+        "HD95_mm",
+        "CentroidDistance_mm",
+        "RelativeVolumeDifference_percent",
+    ]
+
+    results_df = results_df[cols]
+
+    return results_df, consensus, vote_map
+
 
 
 # NOT PART OF THE CLASS. UTILITY FUNCTION TO SAVE RESULTS TO CSV/EXCEL

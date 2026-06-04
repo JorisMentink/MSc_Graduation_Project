@@ -200,26 +200,32 @@ class Segmentation:
 
         self.prompt_sets = split_prompts_to_sets(self.prompts_by_slice, bbox_prompts_by_slice)
         logits_per_set = []
+        weights_used = []
 
         #Loop through all prompt sets and run individual segmentations
-        for set_name, prompt_set in self.prompt_sets.items():
+        for num, (set_name, prompt_set) in enumerate(self.prompt_sets.items()):
             
-            print(f"Running segmentation for prompt set '{set_name}' with slices: {list(prompt_set.keys())}")
+            if weighting_list is None or weighting_list[num] > 0.0:
 
-            pred_seg, pred_logits = run_medsam2_inference_from_arrays(
-                vol=self.img,
-                predictor=self.predictor,
-                image_size=512,
-                prompts_by_slice=prompt_set,
-                p_low=1.0,
-                p_high=99.0,
-                threshold=threshold,
-                propagation_style=propagation_style,
-                nr_propagation_slices=nr_propagation_slices,
-            )
+                print(f"Running segmentation for prompt set '{set_name}' with slices: {list(prompt_set.keys())}")
 
-            #Store logits for every prompt set for later fusion
-            logits_per_set.append(pred_logits)
+                pred_seg, pred_logits = run_medsam2_inference_from_arrays(
+                    vol=self.img,
+                    predictor=self.predictor,
+                    image_size=512,
+                    prompts_by_slice=prompt_set,
+                    p_low=1.0,
+                    p_high=99.0,
+                    threshold=threshold,
+                    propagation_style=propagation_style,
+                    nr_propagation_slices=nr_propagation_slices,
+                )
+
+                # Store logits for every prompt set for later fusion
+                logits_per_set.append(pred_logits)
+
+                if weighting_list is not None:
+                    weights_used.append(weighting_list[num])
 
         #Basic, equal weighted logit averaging.
         if weighting_strategy == "average":
@@ -227,21 +233,19 @@ class Segmentation:
 
         elif weighting_strategy == "custom":
             
-            if weighting_list is None:
-                raise ValueError("weighting_list must be provided when weighting_strategy='custom'.")
-            
-            if not np.isclose(sum(weighting_list), 1.0): #Used np.isclose in stead of == to account for precise floats being weird.
-                raise ValueError(f"weighting_list must sum to 1.0, but sums to {sum(weighting_list)}.")
+            #Some error checks for robustness
+            if len(logits_per_set) != len(weights_used):
+                raise ValueError("Mismatch between stored logits and weights.")
 
-            if len(weighting_list) != len(logits_per_set):
+            if not np.isclose(sum(weights_used), 1.0): #Used np.isclose in stead of == to account for precise floats being weird.
                 raise ValueError(
-                    f"weighting_list has length {len(weighting_list)}, "
-                    f"but {len(logits_per_set)} prompt sets were run."
+                    f"Used weights must sum to 1.0, but sum to {sum(weights_used)}."
                 )
 
+            #Creating empty frame to add all averaged logits to
             final_logits = np.zeros_like(logits_per_set[0], dtype=np.float32)
 
-            for nr, weight_factor in enumerate(weighting_list):
+            for nr, weight_factor in enumerate(weights_used):
                 final_logits += logits_per_set[nr] * weight_factor
 
         else:

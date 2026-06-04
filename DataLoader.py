@@ -3,7 +3,7 @@ import SimpleITK as sitk
 from pathlib import Path
 
 class DataLoader():
-    def __init__(self,parentfolder,subject_nr=0,volume_of_interest="CTVT",verbose=False):
+    def __init__(self,parentfolder,subject_nr=0,volume_of_interest="CTVT",verbose=False,load_recontours=False):
 
         self.parentfolder = Path(parentfolder)
         self.subject_nr = subject_nr
@@ -27,17 +27,18 @@ class DataLoader():
             mask_path = self.subjectfolder / "nnUNetOutput/mask_CTVT_427_nnUNet.nii.gz"
             unc_path = self.subjectfolder / "nnUNetOutput/mask_CTVT_427_nnUNet_uncertaintyMap.nii.gz"
             gt_path = self.subjectfolder / "mask_CTVT_427.nii.gz"
+                
         elif self.volume_of_interest == "rectum":
             mask_path = self.subjectfolder / "nnUNetOutput/mask_Rectum_nnUNet.nii.gz"
             unc_path = self.subjectfolder / "nnUNetOutput/mask_Rectum_nnUNet_uncertaintyMap.nii.gz"
             gt_path = self.subjectfolder / "mask_Rectum.nii.gz"
-
+                
         #Load data as arrays
         self.img = sitk.GetArrayFromImage(sitk.ReadImage(str(img_path)))
         self.mask = sitk.GetArrayFromImage(sitk.ReadImage(str(mask_path))) > 0
         self.unc_map = sitk.GetArrayFromImage(sitk.ReadImage(str(unc_path)))
         self.gt = sitk.GetArrayFromImage(sitk.ReadImage(str(gt_path))) > 0
-
+            
         #LOAD IMAGE SPACING
         img_itk = sitk.ReadImage(str(img_path))
         spacing_sitk = img_itk.GetSpacing()  # (x, y, z)
@@ -47,3 +48,20 @@ class DataLoader():
             print(f"Loaded subject {self.subjects[subject_nr]} with volume of interest '{self.volume_of_interest}'")
             print(f"Image shape: {self.img.shape}, Mask shape: {self.mask.shape}, Uncertainty map shape: {self.unc_map.shape}, Ground truth shape: {self.gt.shape}")
             print(f"Image spacing (z, y, x): {self.img_spacing}")
+        
+    def load_recontours(self):
+
+        if self.volume_of_interest == "CTVT":
+            observer_paths = sorted((self.subjectfolder / "observerData").glob("mask_CTVT_427_step2_obs*.nii.gz"))
+
+        elif self.volume_of_interest == "rectum":
+            observer_paths = sorted((self.subjectfolder / "observerData").glob("mask_Rectum_step2_obs*.nii.gz"))
+
+        self.observer_recontours = [
+            sitk.GetArrayFromImage(sitk.ReadImage(str(p))) > 0
+            for p in observer_paths
+        ]
+
+        self.observer_names = [p.name.split("obs")[-1].replace(".nii.gz", "") for p in observer_paths]
+
+        return self.observer_recontours

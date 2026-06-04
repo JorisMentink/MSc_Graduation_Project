@@ -31,90 +31,126 @@ class UG_prompter():
             print(f"Initilialized UG_prompter for subject {self.subject_nr} with volume of interest '{self.volume_of_interest}'")
             print(f"Image shape: {self.img.shape}, Mask shape: {self.mask.shape}, Uncertainty map shape: {self.unc_map.shape}.")
 
-    def threshold_uncertainty_map(self,unc_threshold=None,target_mm=3.0,step_fraction=0.05,mode="mean"):
+    def threshold_uncertainty_map(
+        self,
+        unc_threshold=None,
+        target_mm=3.0,
+        max_iter=20,
+        tol_mm=0.005,
+        method="raycast",
+        mode="mean"
+    ):
 
-        #If threshold is manually set. use that
+        # If threshold is manually set, use that
         if unc_threshold is not None:
-            self.unc_map_bin  = self.unc_map >= unc_threshold
+            self.thr = unc_threshold
+            self.unc_map_bin = self.unc_map >= self.thr
             return self.unc_map_bin
-        
-        else:
-            max_val = float(np.max(self.unc_map))
-            step = step_fraction * max_val
-            thr = max_val #Initially threshold from max value
-            last_valid = None
 
-            while thr > 0:
-                band_values = []
+        max_val = float(np.max(self.unc_map))
 
-                for z in range(self.mask.shape[0]):
-                    #Skipping empty slices
-                    seg = self.mask[z]
-                    unc_bin = self.unc_map[z] >= thr
-                    if not seg.any() or not unc_bin.any():
-                        continue
-                    
-                    seg_edge, unc_inner, unc_outer, _, __ = extract_bands(seg,unc_bin)
+        low = 0.0
+        high = max_val
 
-                    try:
+        best_thr = None
+        best_band = None
+        best_error = np.inf
+
+        for i in range(max_iter):
+
+            thr = (low + high) / 2.0
+            band_values = []
+
+            for z in range(self.mask.shape[0]):
+
+                seg = self.mask[z]
+                unc_bin = self.unc_map[z] >= thr
+
+                if not seg.any() or not unc_bin.any():
+                    continue
+
+                seg_edge, unc_inner, unc_outer, _, __ = extract_bands(seg, unc_bin)
+
+                #Determine band thickness 
+                try:
+                    if method == "raycast":
                         res = determine_band_thickness_mm_raycast(
                             seg=seg,
                             unc_map=unc_bin,
                             unc_inner=unc_inner,
                             seg_edge=seg_edge,
                             unc_outer=unc_outer,
-                            pixel_spacing=self.img_spacing,
-                            angle_step=10,
-                            step_mm=None,
-                            pad=5
-                        )
+                        pixel_spacing=self.img_spacing,
+                        angle_step=10,
+                        step_mm=None,
+                        pad=5
+                    )
+                    
+                    elif method == "local_normals":
+                        res = determine_band_thickness_mm_normals(
+                            seg=seg,
+                            unc_inner=unc_inner,
+                            seg_edge=seg_edge,
+                            unc_outer=unc_outer,
+                            ordered_edge_pixels=order_segmentation_pixels(seg_edge),
+                            interpix_dist=2,
+                            pixel_interval=1,
+                            pixel_spacing=self.img_spacing)
 
-                        #Determine band thickness average across rays and slices
-                        if mode == "mean":
-                            band = np.mean(res["inner_mm"] + res["outer_mm"])
-                        elif mode == "median":
-                            band = np.median(res["inner_mm"] + res["outer_mm"])
-                        else:
-                            raise ValueError("Mode must be either 'mean' or 'median'")
-                        
-                        band_values.append(band)
+                    values = res["inner_mm"] + res["outer_mm"]
 
-                    except ValueError:
-                        continue
+                    band = np.mean(values)
+                    band_values.append(band)
 
-                #Checks if no valid bands were found for this threshold across the 3D volume
-                if len(band_values) == 0:
-                    thr -= step
+                except ValueError:
                     continue
 
-                #Computes average band thickness across all valid slices for this threshold
+            #Compute average band thickness across all slices
+            if mode == "mean":
                 avg_band = np.mean(band_values)
+            elif mode == "median": #Can be better since edge-slices contain a lot of uncertainty and may skew results
+                avg_band = np.median(band_values)
+            else:
+                raise ValueError("Mode must be either 'mean' or 'median'")
+            
+            error = abs(avg_band - target_mm)
 
-                if self.verbose:
-                    print(f"thr={thr:.6f} | band={avg_band:.2f} mm")
+            #Report itreation stats
+            if self.verbose:
+                print(
+                    f"iter={i:02d} | thr={thr:.6f} | "
+                    f"band={avg_band:.2f} mm | error={error:.2f}"
+                )
 
-                last_valid = (thr, avg_band)
+            #Check if this is the best threshold so far
+            if error < best_error:
+                best_error = error
+                best_thr = thr
+                best_band = avg_band
 
-                if avg_band >= target_mm:
-                    self.thr = thr
-                    self.unc_map_bin = self.unc_map >= self.thr
-                    
-                    return self.unc_map_bin
-                
-                thr -= step
+            if error <= tol_mm:
+                break
 
-            #Fallback if target_mm was never reached
-            if last_valid is not None:
-                self.thr, self.avg_band = last_valid
-                if self.verbose:
-                    print(
-                        f"Target band thickness of {target_mm:.2f} mm was not reached. "
-                        f"Using last valid threshold {self.thr:.6f} with band {self.avg_band:.2f} mm."
-                    )
-                self.unc_map_bin = self.unc_map >= self.thr
-                return self.unc_map_bin
+            if avg_band < target_mm:
+                high = thr #Leads to decrease in threshold
+            else:
+                low = thr #Leads to increase in threshold
 
+        if best_thr is None:
             raise ValueError("Could not determine a valid threshold.")
+
+        self.thr = best_thr
+        self.avg_band = best_band
+        self.unc_map_bin = self.unc_map >= self.thr
+
+        #Report selected threshold 
+        if self.verbose:
+            print(
+                f"Selected threshold {self.thr:.6f} "
+                f"with band thickness {self.avg_band:.2f} mm."
+            )
+
+        return self.unc_map_bin
         
     def compute_band_thickness(self,method="raycast"):
 
