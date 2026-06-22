@@ -1,0 +1,66 @@
+Run parameter overview
+================================================================================
+
+run1.csv
+  target_mm: 2.0
+  method: local_normals
+  unc_band_thr_mm: 3.0
+  pixel_interval: 10
+  angle_step: 5
+  weighting_list: [0.2, 0.8]
+  propagation_style: central_start
+
+run2.csv
+  target_mm: 3.0
+  method: local_normals
+  unc_band_thr_mm: 3.0
+  pixel_interval: 10
+  angle_step: 5
+  weighting_list: [0.2, 0.8]
+  propagation_style: central_start
+
+run3.csv
+  target_mm: 4.0
+  method: local_normals
+  unc_band_thr_mm: 3.0
+  pixel_interval: 10
+  angle_step: 5
+  weighting_list: [0.2, 0.8]
+  propagation_style: central_start
+
+run4.csv
+  target_mm: 5.0
+  method: local_normals
+  unc_band_thr_mm: 3.0
+  pixel_interval: 10
+  angle_step: 5
+  weighting_list: [0.2, 0.8]
+  propagation_style: central_start
+
+run5.csv
+  target_mm: 3.0
+  method: local_normals
+  unc_band_thr_mm: 2.0
+  pixel_interval: 10
+  angle_step: 5
+  weighting_list: [0.2, 0.8]
+  propagation_style: central_start
+
+run6.csv
+  target_mm: 3.0
+  method: local_normals
+  unc_band_thr_mm: 4.0
+  pixel_interval: 10
+  angle_step: 5
+  weighting_list: [0.2, 0.8]
+  propagation_style: central_start
+
+run7.csv
+  target_mm: 3.0
+  method: local_normals
+  unc_band_thr_mm: 5.0
+  pixel_interval: 10
+  angle_step: 5
+  weighting_list: [0.2, 0.8]
+  propagation_style: central_start
+

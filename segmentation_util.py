@@ -310,49 +310,87 @@ def run_medsam2_inference_from_arrays(
 
     return segs_3d, logits_3d
 
+def combine_prompt_sets(prompt_dict_list):
+    """
+    Combine multiple prompt dictionaries into a single prompt dictionary.
 
-def split_prompts_to_sets(prompts_by_slice,bbox_prompts_by_slice):
-    
-    dense_prompts = {}
-    point_prompts = {}
-    combined_prompts = {}
-
-    for z, prompt in prompts_by_slice.items():
-
-        has_points = prompt.get("points") is not None
-        has_mask = prompt.get("mask_input") is not None
-        has_bbox = prompt.get("bbox") is not None
-
-        # Dense prompt only
-        if has_mask:
-            dense_prompts[z] = {
-                "points": None,
-                "point_labels": None,
-                "bbox": None,
-                "mask_input": prompt["mask_input"],
+    Parameters
+    ----------
+    prompt_dict_list : list[dict]
+        List of prompt dictionaries in the format:
+        {
+            z: {
+                "points": np.ndarray or None,
+                "point_labels": np.ndarray or None,
+                "bbox": np.ndarray or None,
+                "mask_input": np.ndarray or None,
             }
+        }
 
-        # Point prompts only
-        if has_points:
-            point_prompts[z] = {
-                "points": prompt["points"],
-                "point_labels": prompt["point_labels"],
-                "bbox": None,
-                "mask_input": None,
-            }
+    Returns
+    -------
+    combined : dict
+        Combined prompt dictionary in the same format.
+    """
 
-        # Combined prompts
-        if has_points or has_mask or has_bbox:
-            combined_prompts[z] = {
-                "points": prompt["points"],
-                "point_labels": prompt["point_labels"],
-                "bbox": prompt["bbox"],
-                "mask_input": prompt["mask_input"],
-            }
+    combined = {}
 
-    return {
-        "dense": dense_prompts,
-        "points": point_prompts,
-        "combined": combined_prompts,
-        "bbox": bbox_prompts_by_slice,
-    }
+    for prompt_dict in prompt_dict_list:
+
+        for z, prompt in prompt_dict.items():
+
+            # Create empty slice entry if needed
+            if z not in combined:
+                combined[z] = {
+                    "points": [],
+                    "point_labels": [],
+                    "bbox": None,
+                    "mask_input": None,
+                }
+
+            # Collect points
+            if prompt.get("points") is not None:
+                combined[z]["points"].append(prompt["points"])
+
+            if prompt.get("point_labels") is not None:
+                combined[z]["point_labels"].append(prompt["point_labels"])
+
+            # Keep the last bbox encountered
+            if prompt.get("bbox") is not None:
+                combined[z]["bbox"] = prompt["bbox"]
+
+            # Union mask inputs
+            if prompt.get("mask_input") is not None:
+                if combined[z]["mask_input"] is None:
+                    combined[z]["mask_input"] = prompt["mask_input"].copy()
+                else:
+                    combined[z]["mask_input"] = np.maximum(
+                        combined[z]["mask_input"],
+                        prompt["mask_input"]
+                    )
+
+    # Convert lists of points into arrays
+    for z in combined:
+
+        if len(combined[z]["points"]) > 0:
+            combined[z]["points"] = np.concatenate(
+                combined[z]["points"], axis=0
+            )
+            combined[z]["point_labels"] = np.concatenate(
+                combined[z]["point_labels"], axis=0
+            )
+        else:
+            combined[z]["points"] = None
+            combined[z]["point_labels"] = None
+
+    return combined
+
+def compile_prompt_sets(prompt_dict_list, prompt_set_names, prompt_set_weights = None):
+
+    prompt_sets_dict = {}
+
+    for idx, name in enumerate(prompt_set_names):
+        
+        prompt_sets_dict[name] = (prompt_dict_list[idx],prompt_set_weights[idx])
+
+    return prompt_sets_dict

@@ -262,7 +262,6 @@ def determine_band_thickness_mm_normals(
     res_total_mm = []
 
     results = []
-    print(f"there are {n_pixels} many pixels")
 
     for pixel_index in range(0, n_pixels, pixel_interval):
         

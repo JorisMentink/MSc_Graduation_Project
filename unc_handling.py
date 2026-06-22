@@ -56,8 +56,12 @@ class UG_prompter():
         best_band = None
         best_error = np.inf
 
-        for i in range(max_iter):
 
+
+        for i in range(max_iter):
+            
+            self.slice_value_records = []
+            
             thr = (low + high) / 2.0
             band_values = []
 
@@ -99,12 +103,15 @@ class UG_prompter():
 
                     values = res["inner_mm"] + res["outer_mm"]
 
-                    band = np.mean(values)
-                    band_values.append(band)
+                    band_values.extend(values)
+
+                    self.slice_value_records.append(values)
 
                 except ValueError:
                     continue
 
+
+            self.all_records = band_values
             #Compute average band thickness across all slices
             if mode == "mean":
                 avg_band = np.mean(band_values)
@@ -211,7 +218,7 @@ class UG_prompter():
     def generate_prompts_boxes(self, band_threshold=0, pad=0):
         """
         Generate SAM2 prompts containing:
-        - bounding box around thresholded uncertainty region
+        - bounding box around segmentation + thresholded uncertainty region
         - dense mask prompt from self.mask
         """
 
@@ -226,18 +233,21 @@ class UG_prompter():
                 continue
 
             unc = self.unc_map_bin[z].astype(bool)
+            mask_2d = self.mask[z].astype(bool)
 
-            if not unc.any():
+            combined_region = unc | mask_2d
+
+            if not combined_region.any():
                 continue
 
-            ys_unc, xs_unc = np.where(unc)
+            ys, xs = np.where(combined_region)
 
-            H, W = unc.shape
+            H, W = combined_region.shape
 
-            x0 = max(0, int(xs_unc.min()) - pad)
-            x1 = min(W - 1, int(xs_unc.max()) + pad)
-            y0 = max(0, int(ys_unc.min()) - pad)
-            y1 = min(H - 1, int(ys_unc.max()) + pad)
+            x0 = max(0, int(xs.min()) - pad)
+            x1 = min(W - 1, int(xs.max()) + pad)
+            y0 = max(0, int(ys.min()) - pad)
+            y1 = min(H - 1, int(ys.max()) + pad)
 
             bbox = np.array([x0, y0, x1, y1], dtype=np.float32)
 
@@ -245,7 +255,7 @@ class UG_prompter():
                 "points": None,
                 "point_labels": None,
                 "bbox": bbox,
-                "mask_input": self.mask[z].astype(np.uint8),
+                "mask_input": None,
             }
 
         self.prompts_by_slice = prompts_by_slice
@@ -357,13 +367,11 @@ class UG_prompter():
                     if inner_mm <= 0 or outer_mm <= 0:
                         continue
 
-
-                    #TODO: make this work with a scalar dependent on uncertainty. absolute values are not fixed.
                     # Positive prompt inward
-                    pos_mm = mid_mm + inner_normal_yx * (inner_mm + 2)   #(6) #ABSOLUTE VALUE NOW. THIS SUCKS. LOL
+                    pos_mm = mid_mm + inner_normal_yx * (inner_mm + 2)
 
                     # Negative prompt outward
-                    neg_mm = mid_mm + outer_normal_yx * (outer_mm + 2)   #(12) # ABSOLUTE VALUE NOW. THIS SUCKS. LOL
+                    neg_mm = mid_mm + outer_normal_yx * (outer_mm + 2)
 
                     pos_yx = np.array([
                         pos_mm[0] / self.img_spacing[1],
@@ -429,7 +437,7 @@ class UG_prompter():
                 outer_mm = results["outer_mm"]
                 band_total_mm = results["band_total_mm"]
 
-#============================== SAVING RAYS FOR PLOTTING =======================================
+                #============================== SAVING RAYS FOR PLOTTING =======================================
                 if not hasattr(self, "rays_by_slice"):
                     self.rays_by_slice = {}
 
@@ -450,7 +458,7 @@ class UG_prompter():
                     "outer_mm": outer_mm,
                     "band_total_mm": band_total_mm,
                 }
-#========================================================================================
+                #========================================================================================
 
                 for num, angle in enumerate(angles_deg):
 
@@ -466,7 +474,7 @@ class UG_prompter():
                     ])
 
                     # Positive prompt inside segmentation
-                    pos_mm = center_of_mass_mm + direction_yx * max(seg_mm[num] - (inner_mm[num]+2), 0.0) #Adaptive on uncertainty band, snaps to centerpoint if band is too thick.
+                    pos_mm = center_of_mass_mm + direction_yx * max(seg_mm[num] - (inner_mm[num]+2), 0.0)
 
                     # Negative prompt outside segmentation
                     neg_mm = center_of_mass_mm + direction_yx * (seg_mm[num] + (outer_mm[num]+2))

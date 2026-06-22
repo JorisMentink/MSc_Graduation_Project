@@ -1,6 +1,6 @@
 from DataLoader import DataLoader
 from sam2.build_sam import build_sam2_video_predictor_npz
-from segmentation_util import run_medsam2_inference_from_arrays, split_prompts_to_sets
+from segmentation_util import run_medsam2_inference_from_arrays, compile_prompt_sets
 import numpy as np
 
 class Segmentation:
@@ -64,97 +64,60 @@ class Segmentation:
                 "mask_input": mask_2d,
             }
 
-        self.prompt_dict_list.append(dense_prompts)
-        return dense_prompts
+        self.dense_prompt_set = dense_prompts
 
-    def add_prompt_dict(self, prompt_dict):
-        
-        if not isinstance(prompt_dict, dict):
-            raise TypeError("Prompt dict must be a dictionary with slice indices as keys.")
-
-        self.prompt_dict_list.append(prompt_dict)
-
-        if self.verbose:
-            print(f"Added new prompt dict with slices: {list(prompt_dict.keys())}")
-
+        return self.dense_prompt_set
 
     def check_loaded_prompts(self):
+        """
+        Prints summary of loaded prompts, including number of slices with prompts and their range.
+        """
 
-        print(f"In total, {len(self.prompt_dict_list)} prompt dict(s) loaded.")
-        for i, prompt_dict in enumerate(self.prompt_dict_list):
-            print(f"{i}th prompt dict contains prompts for slices: {list(prompt_dict.keys())}")
-        print(f"To combine prompts for segmentation, run construct_prompts")
+        print("\nPrompt summary")
+        print("-" * 40)
+        if hasattr(self, "compiled_prompt_sets") and self.compiled_prompt_sets is not None:
+            print(f"Compiled prompt sets: {len(self.compiled_prompt_sets)}")
 
+            for set_name, (prompt_dict, weight) in self.compiled_prompt_sets.items():
+                slices = sorted(prompt_dict.keys())
 
-    def construct_prompts(self):
+                if len(slices) > 0:
+                    print(f"  {set_name}: {len(slices)} slices "
+                        f"({slices[0]} to {slices[-1]}), weight={weight}")
+                else:
+                    print(f"  {set_name}: 0 slices, weight={weight}")
 
-        combined = {}
+        else:
+            print("Compiled prompt sets: not created")
 
-        for prompt_dict in self.prompt_dict_list:
-
-            for z, prompt in prompt_dict.items():
-
-                #Create empty slice for prompts to be appended to
-                if z not in combined:
-                    combined[z] = {
-                        "points": [],
-                        "point_labels": [],
-                        "bbox": None,
-                        "mask_input": None,
-                    }
-
-                #If point prompts are present, append their position and label to the list
-                if prompt.get("points") is not None:
-                    combined[z]["points"].append(prompt["points"])
-
-                if prompt.get("point_labels") is not None:
-                    combined[z]["point_labels"].append(prompt["point_labels"])
-
-                #If a bbox prompt is present, use the lastly added one TODO: check if this is the best way
-                if prompt.get("bbox") is not None:
-                    combined[z]["bbox"] = prompt["bbox"]
-
-                #If mask prompt is present, combine it with existing mask (union)
-                if prompt.get("mask_input") is not None:
-                    if combined[z]["mask_input"] is None:
-                        combined[z]["mask_input"] = prompt["mask_input"]
-                    else:
-                        combined[z]["mask_input"] = np.maximum(
-                            combined[z]["mask_input"],
-                            prompt["mask_input"],
-                        )
-
-        #create final arrays
-        for z in combined:
-            # stack points
-            if len(combined[z]["points"]) > 0:
-                combined[z]["points"] = np.concatenate(combined[z]["points"], axis=0)
-                combined[z]["point_labels"] = np.concatenate(combined[z]["point_labels"], axis=0)
-            else:
-                combined[z]["points"] = None
-                combined[z]["point_labels"] = None
-
-        #Store new prompts and return
-        self.prompts_by_slice = combined
-        self.prompt_dict_list = [combined]
-
-        return self.prompts_by_slice
+        print("-" * 40)
 
 
-    def run_segmentation(self,propagation_style="default", nr_propagation_slices=2):
-        self.predicted_seg, self.predicted_logits = run_medsam2_inference_from_arrays(
-            vol=self.img,
-            predictor=self.predictor,
-            image_size=512,
-            prompts_by_slice=self.prompts_by_slice,
-            p_low=1.0,
-            p_high=99.0,
-            threshold=0.0,
-            propagation_style=propagation_style,
-            nr_propagation_slices = nr_propagation_slices,
-        )
+    def compile_prompt_sets(self, prompt_dict_list=None, prompt_set_names=None, prompt_set_weights=None):
 
-        return self.predicted_seg
+        #If no prompt dict list is provided, this function defaults to use the dense mask as the only prompt set.
+        if prompt_dict_list is None:
+            
+            if self.dense_prompt_set is None:
+                raise ValueError("No prompt dict list provided and no dense prompt set found. Please run load_dense_prompt() first.")
+            
+            self.compiled_prompt_sets = { "dense_mask": (self.dense_prompt_set, 1.0) }
+            return
+
+        if prompt_set_weights is None:
+            if not (len(prompt_dict_list) == len(prompt_set_names)):
+                raise ValueError(f"prompt_dict_list and prompt_set_names must have the same length. Got {len(prompt_dict_list)} and {len(prompt_set_names)}.")
+        else:
+            if not (len(prompt_dict_list) == len(prompt_set_names) == len(prompt_set_weights)):
+                raise ValueError(f"prompt_dict_list, prompt_set_names, and prompt_set_weights ""must all have the same length. Got {len(prompt_dict_list)}, {len(prompt_set_names)}, and {len(prompt_set_weights)}.")
+
+        #Use np.isclose to account for potential float summing being funkyyy
+        if not np.isclose(sum(prompt_set_weights), 1.0):
+            raise ValueError("Sum of prompt set weights must be 1.0.")
+
+        self.compiled_prompt_sets = compile_prompt_sets(prompt_dict_list, prompt_set_names, prompt_set_weights)
+        return
+
 
     def remove_distant_slices(self, tolerance_frames=3):
         """
@@ -194,18 +157,25 @@ class Segmentation:
         return self.predicted_seg
 
 
-    def run_segmentation_sets(self, propagation_style="default", nr_propagation_slices=2, weighting_strategy="average", weighting_list=None, threshold=0.0, bbox_prompts_by_slice=None):
+    def run_segmentation_sets(self, propagation_style="default", weighting_strategy="average", threshold=0.0):
         """Run segmentation for different prompt sets and combine results using specified logit fusion strategy.
         prompt sets are generated via split_prompts_to_sets, imported from segmentation_util.py"""
 
-        self.prompt_sets = split_prompts_to_sets(self.prompts_by_slice, bbox_prompts_by_slice)
+        if self.compiled_prompt_sets is None:
+            raise ValueError("No compiled prompt sets found. Run compile_prompt_sets() first.")
+
+
         logits_per_set = []
         weights_used = []
 
+        self.segs_per_set = {}
+
         #Loop through all prompt sets and run individual segmentations
-        for num, (set_name, prompt_set) in enumerate(self.prompt_sets.items()):
+        for num, (set_name, set_data) in enumerate(self.compiled_prompt_sets.items()):
             
-            if weighting_list is None or weighting_list[num] > 0.0:
+            prompt_set, weight = set_data
+            
+            if weight is None or weight > 0.0:
 
                 print(f"Running segmentation for prompt set '{set_name}' with slices: {list(prompt_set.keys())}")
 
@@ -218,30 +188,21 @@ class Segmentation:
                     p_high=99.0,
                     threshold=threshold,
                     propagation_style=propagation_style,
-                    nr_propagation_slices=nr_propagation_slices,
                 )
 
-                # Store logits for every prompt set for later fusion
+                self.segs_per_set[set_name] = pred_seg
+
+                #Store logits for every prompt set for later fusion
                 logits_per_set.append(pred_logits)
 
-                if weighting_list is not None:
-                    weights_used.append(weighting_list[num])
+                if weight > 0.0:
+                    weights_used.append(weight)
 
         #Basic, equal weighted logit averaging.
         if weighting_strategy == "average":
             final_logits = np.mean(logits_per_set, axis=0)
 
         elif weighting_strategy == "custom":
-            
-            #Some error checks for robustness
-            if len(logits_per_set) != len(weights_used):
-                raise ValueError("Mismatch between stored logits and weights.")
-
-            if not np.isclose(sum(weights_used), 1.0): #Used np.isclose in stead of == to account for precise floats being weird.
-                raise ValueError(
-                    f"Used weights must sum to 1.0, but sum to {sum(weights_used)}."
-                )
-
             #Creating empty frame to add all averaged logits to
             final_logits = np.zeros_like(logits_per_set[0], dtype=np.float32)
 

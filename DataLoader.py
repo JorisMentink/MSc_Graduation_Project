@@ -65,3 +65,20 @@ class DataLoader():
         self.observer_names = [p.name.split("obs")[-1].replace(".nii.gz", "") for p in observer_paths]
 
         return self.observer_recontours
+    
+    def load_consensus(self):
+
+        if self.volume_of_interest == "CTVT":
+            consensus_path = self.subjectfolder / "observerData" / "mask_CTVT_427_step2_STAPLEConsensus.nii.gz"
+
+        elif self.volume_of_interest == "rectum":
+            consensus_path = self.subjectfolder / "observerData" / "mask_Rectum_step2_STAPLEConsensus.nii.gz"
+
+        if not consensus_path.exists():
+            raise FileNotFoundError(f"Consensus file not found:\n{consensus_path}")
+
+        self.consensus_recontour = (
+            sitk.GetArrayFromImage(sitk.ReadImage(str(consensus_path))) > 0
+        )
+
+        return self.consensus_recontour
