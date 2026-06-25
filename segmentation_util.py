@@ -33,6 +33,7 @@ def run_medsam2_inference_from_arrays(
     threshold: float = 0.0,
     propagation_style: str = "default",
     nr_propagation_slices: int = 2,
+    slice_bounds = None,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
@@ -45,6 +46,11 @@ def run_medsam2_inference_from_arrays(
 
     if vol.ndim != 3:
         raise ValueError(f"Expected 3D volume, got {vol.shape}")
+    
+    if slice_bounds is not None:
+        start_slice, end_slice = slice_bounds
+        if not (0 <= start_slice <= end_slice < vol.shape[0]):
+            raise ValueError(f"Invalid slice_bounds {slice_bounds} for volume with shape {vol.shape}")
 
     D, H, W = vol.shape
     print("Volume shape (D,H,W):", (D, H, W))
@@ -135,14 +141,39 @@ def run_medsam2_inference_from_arrays(
 
         return prompt
 
+
+
     valid_slice_indices = [
         slice_idx
         for slice_idx in sorted(prompts_by_slice.keys())
         if has_valid_prompt(*unpack_prompt(prompts_by_slice[slice_idx]))
     ]
+    
+    #SETTING START AND ENDING BOUNDS IF SPECIFIED
+    bound_start, bound_end = (
+        slice_bounds if slice_bounds is not None
+        else (0, D - 1)
+    )
 
-    if len(valid_slice_indices) == 0:
-        raise ValueError("No usable prompts found on any slice.")
+    if slice_bounds is not None:
+        valid_slice_indices = [
+            z for z in valid_slice_indices
+            if bound_start <= z <= bound_end
+        ]
+
+        if len(valid_slice_indices) == 0:
+            raise ValueError(
+                f"No prompted slices found inside slice_bounds={slice_bounds}."
+            )
+
+    #Helper functions to compute maximum propagation slices from a given starting slice to the bounds given
+    def forward_max(start_slice):
+        return bound_end - start_slice
+
+    def backward_max(start_slice):
+        return start_slice - bound_start
+
+
 
     with torch.inference_mode(), autocast_ctx:
         inference_state = predictor.init_state(frames_t, H, W)
@@ -157,67 +188,90 @@ def run_medsam2_inference_from_arrays(
 
         #Default propagation: propagate forward and backward from the first prompted slice.
         if propagation_style == "default":
-            print("Forward propagation (default)...")
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
-                
+
+            start_fwd = min(valid_slice_indices)
+            start_bwd = max(valid_slice_indices)
+
+            print(f"Forward propagation (default, from slice {start_fwd})...")
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state,
+                start_frame_idx=start_fwd,
+                max_frame_num_to_track=forward_max(start_fwd),
+            ):
                 logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
                 logits_3d[out_frame_idx] += logit2d
                 logit_count[out_frame_idx] += 1
 
-            print("Backward propagation (default)...")
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, reverse=True):
-
+            print(f"Backward propagation (default, from slice {start_bwd})...")
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state,
+                start_frame_idx=start_bwd,
+                reverse=True,
+                max_frame_num_to_track=backward_max(start_bwd),
+            ):
                 logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
                 logits_3d[out_frame_idx] += logit2d
                 logit_count[out_frame_idx] += 1
-            
-            #Combine logits via averaging if relevant.
+
             valid = logit_count > 0
             logits_3d[valid] = logits_3d[valid] / logit_count[valid]
             segs_3d = (logits_3d > threshold).astype(np.uint8)
 
         #Full propagation: do a full forward and backward pass of propagation.
         elif propagation_style == "full":
-            print("Forward propagation (full, from slice 0)...")
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=0):
-                
+
+            print(f"Forward propagation (full, from slice {bound_start})...")
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state,
+                start_frame_idx=bound_start,
+                max_frame_num_to_track=bound_end - bound_start,
+            ):
                 logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
                 logits_3d[out_frame_idx] += logit2d
                 logit_count[out_frame_idx] += 1
 
-            print(f"Backward propagation (full, from slice {D - 1})...")
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=D - 1, reverse=True):
-                
+            print(f"Backward propagation (full, from slice {bound_end})...")
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state,
+                start_frame_idx=bound_end,
+                reverse=True,
+                max_frame_num_to_track=bound_end - bound_start,
+            ):
                 logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
                 logits_3d[out_frame_idx] += logit2d
                 logit_count[out_frame_idx] += 1
 
-            #Combine logits via averaging if relevant.
             valid = logit_count > 0
             logits_3d[valid] = logits_3d[valid] / logit_count[valid]
             segs_3d = (logits_3d > threshold).astype(np.uint8)
 
         #Smart propagation: propagate forward from the first prompted slice and backwards from the last slice
         elif propagation_style == "prompt_based":
-            
-            start_fwd = min(valid_slice_indices) # first prompted slice
-            start_bwd = max(valid_slice_indices) # last prompted slice
-            
+
+            start_fwd = min(valid_slice_indices)
+            start_bwd = max(valid_slice_indices)
+
             print(f"Forward propagation (prompt_based, from slice {start_fwd})...")
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=start_fwd):
-                
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state,
+                start_frame_idx=start_fwd,
+                max_frame_num_to_track=forward_max(start_fwd),
+            ):
                 logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
                 logits_3d[out_frame_idx] += logit2d
                 logit_count[out_frame_idx] += 1
 
             print(f"Backward propagation (prompt_based, from slice {start_bwd})...")
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=start_bwd, reverse=True):
-                
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state,
+                start_frame_idx=start_bwd,
+                reverse=True,
+                max_frame_num_to_track=backward_max(start_bwd),
+            ):
                 logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
                 logits_3d[out_frame_idx] += logit2d
                 logit_count[out_frame_idx] += 1
-                
-            #Combine logits via averaging if relevant.
+
             valid = logit_count > 0
             logits_3d[valid] = logits_3d[valid] / logit_count[valid]
             segs_3d = (logits_3d > threshold).astype(np.uint8)
@@ -225,26 +279,30 @@ def run_medsam2_inference_from_arrays(
         
         #Central propagation: propagate forward and backward from a central slice (e.g. middle slice or middle prompted slice).
         elif propagation_style == "central_start":
-            
+
             start_mid = sorted(valid_slice_indices)[len(valid_slice_indices) // 2]
 
-            print(f"Forward propagation (from middle slice {start_mid})...")
-
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state,start_frame_idx=start_mid):
-                
+            print(f"Forward propagation (central_start, from slice {start_mid})...")
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state,
+                start_frame_idx=start_mid,
+                max_frame_num_to_track=forward_max(start_mid),
+            ):
                 logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
                 logits_3d[out_frame_idx] += logit2d
                 logit_count[out_frame_idx] += 1
 
-            print(f"Backward propagation (from middle slice {start_mid})...")
-
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state,start_frame_idx=start_mid,reverse=True):
-                
+            print(f"Backward propagation (central_start, from slice {start_mid})...")
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state,
+                start_frame_idx=start_mid,
+                reverse=True,
+                max_frame_num_to_track=backward_max(start_mid),
+            ):
                 logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
                 logits_3d[out_frame_idx] += logit2d
                 logit_count[out_frame_idx] += 1
 
-            #Combine logits via averaging if relevant.
             valid = logit_count > 0
             logits_3d[valid] = logits_3d[valid] / logit_count[valid]
             segs_3d = (logits_3d > threshold).astype(np.uint8)
@@ -279,7 +337,8 @@ def run_medsam2_inference_from_arrays(
                 print(f"Forward propagation from slice {start_slice}...")
                 for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
                     inference_state,
-                    start_frame_idx=start_slice
+                    start_frame_idx=start_slice,
+                    max_frame_num_to_track=forward_max(start_slice),
                 ):
                     logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
                     logit_sum[out_frame_idx] += logit2d
@@ -289,7 +348,8 @@ def run_medsam2_inference_from_arrays(
                 for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
                     inference_state,
                     start_frame_idx=start_slice,
-                    reverse=True
+                    reverse=True,
+                    max_frame_num_to_track=backward_max(start_slice),
                 ):
                     logit2d = out_mask_logits[0].detach().cpu().numpy()[0].astype(np.float32)
                     logit_sum[out_frame_idx] += logit2d

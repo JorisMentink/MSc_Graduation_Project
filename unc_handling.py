@@ -367,11 +367,15 @@ class UG_prompter():
                     if inner_mm <= 0 or outer_mm <= 0:
                         continue
 
+                    #PROMPTS NOW GENERATE INSIDE UNCERTAINTY BAND FOR BOTH.
                     # Positive prompt inward
-                    pos_mm = mid_mm + inner_normal_yx * (inner_mm + 2)
+                    pos_mm = mid_mm + outer_normal_yx * (0.5*outer_mm)
+                    #pos_mm = mid_mm + inner_normal_yx * (inner_mm + 2)
 
                     # Negative prompt outward
-                    neg_mm = mid_mm + outer_normal_yx * (outer_mm + 2)
+                    neg_mm = mid_mm + outer_normal_yx * (0.5*outer_mm)
+                    #neg_mm = mid_mm + outer_normal_yx * (outer_mm + 2)
+
 
                     pos_yx = np.array([
                         pos_mm[0] / self.img_spacing[1],
@@ -384,8 +388,8 @@ class UG_prompter():
                     ])
 
                     #NEW PROMPT VALIDITY CHECKS.
-                    if not check_prompt_validity(pos_yx, neg_yx, seg, unc_bin):
-                        continue
+                    #if not check_prompt_validity(pos_yx, neg_yx, seg, unc_bin):
+                    #    continue
 
                     selected_points_yx.extend([pos_yx, neg_yx])
                     selected_labels.extend([1, 0])
@@ -520,10 +524,90 @@ class UG_prompter():
 
         self.prompts_by_slice = prompts_by_slice
         return self.prompts_by_slice
+    
+    def generate_prompts_grid(
+        self,
+        grid_size_pixels=20,
+        negative_margin_pixels=30,
+        band_threshold=None,
+        max_positive_prompts_per_slice=None,
+        max_negative_prompts_per_slice=None,
+    ):
+        """
+        Generate grid prompts:
+        - positive prompts: inside segmentation AND outside uncertainty map
+        - negative prompts: outside segmentation AND outside uncertainty map
 
-            
+        grid_size_pixels controls the spacing between all grid points.
+        """
 
+        if not hasattr(self, "unc_map_bin"):
+            raise AttributeError(
+                "self.unc_map_bin does not exist yet. "
+                "Call threshold_uncertainty_map(...) first."
+            )
 
+        prompts_by_slice = {}
 
+        for z in range(self.mask.shape[0]):
+            seg = self.mask[z].astype(bool)
+            unc = self.unc_map_bin[z].astype(bool)
 
+            if not seg.any():
+                continue
 
+            H, W = seg.shape
+
+            combined = seg | unc
+            ys, xs = np.where(combined)
+
+            if len(ys) == 0:
+                continue
+
+            y0 = max(0, ys.min() - negative_margin_pixels)
+            y1 = min(H, ys.max() + negative_margin_pixels + 1)
+            x0 = max(0, xs.min() - negative_margin_pixels)
+            x1 = min(W, xs.max() + negative_margin_pixels + 1)
+
+            grid_y = np.arange(y0, y1, grid_size_pixels)
+            grid_x = np.arange(x0, x1, grid_size_pixels)
+
+            yy, xx = np.meshgrid(grid_y, grid_x, indexing="ij")
+
+            yy = yy.ravel().astype(int)
+            xx = xx.ravel().astype(int)
+
+            positive_valid = seg[yy, xx] & (~unc[yy, xx])
+            negative_valid = (~seg[yy, xx]) & (~unc[yy, xx])
+
+            pos_yx = np.column_stack([yy[positive_valid], xx[positive_valid]])
+            neg_yx = np.column_stack([yy[negative_valid], xx[negative_valid]])
+
+            if max_positive_prompts_per_slice is not None:
+                pos_yx = pos_yx[:max_positive_prompts_per_slice]
+
+            if max_negative_prompts_per_slice is not None:
+                neg_yx = neg_yx[:max_negative_prompts_per_slice]
+
+            if len(pos_yx) == 0 and len(neg_yx) == 0:
+                continue
+
+            points_yx = np.vstack([pos_yx, neg_yx]).astype(np.float32)
+
+            labels = np.concatenate([
+                np.ones(len(pos_yx), dtype=np.int64),
+                np.zeros(len(neg_yx), dtype=np.int64),
+            ])
+
+            # Convert from (y, x) to SAM format (x, y)
+            points_xy = points_yx[:, ::-1]
+
+            prompts_by_slice[z] = {
+                "points": points_xy,
+                "point_labels": labels,
+                "bbox": None,
+                "mask_input": None,
+            }
+
+        self.prompts_by_slice = prompts_by_slice
+        return prompts_by_slice

@@ -263,7 +263,13 @@ def determine_band_thickness_mm_normals(
 
     results = []
 
-    for pixel_index in range(0, n_pixels, pixel_interval):
+    n_samples = max(1, round(n_pixels / pixel_interval))
+
+    sample_indices = np.round(
+        np.linspace(0, n_pixels, n_samples, endpoint=False)
+    ).astype(int)
+
+    for pixel_index in sample_indices:
         
         y, x = ordered_edge_pixels[pixel_index]
         pixel_yx = np.array([y, x], dtype=float)

@@ -43,6 +43,19 @@ class Segmentation:
 
         self.predictor = build_sam2_video_predictor_npz(cfg, checkpoint)
 
+    def reduce_to_slice(self, selected_slice):
+        "Function that reduces the 3D volume to a single slice for extensive testing."
+
+        #This way of indexing maintains 3d nature necessary for SAM2 
+        self.img = self.img[selected_slice:selected_slice+1]
+        self.mask = self.mask[selected_slice:selected_slice+1]
+        self.gt = self.gt[selected_slice:selected_slice+1]
+
+        if self.compiled_prompt_sets is not None:
+            for set_name, (prompt_dict, weight) in self.compiled_prompt_sets.items():
+                self.compiled_prompt_sets[set_name] = ({0: prompt_dict[selected_slice]}, weight)
+
+
     def load_dense_prompt(self):
         "Function that loads existing dense mask as prompt"
 
@@ -157,13 +170,20 @@ class Segmentation:
         return self.predicted_seg
 
 
-    def run_segmentation_sets(self, propagation_style="default", weighting_strategy="average", threshold=0.0):
+    def run_segmentation_sets(self, propagation_style="default", weighting_strategy="average", threshold=0.0,no_external_propagation=False):
         """Run segmentation for different prompt sets and combine results using specified logit fusion strategy.
         prompt sets are generated via split_prompts_to_sets, imported from segmentation_util.py"""
 
         if self.compiled_prompt_sets is None:
             raise ValueError("No compiled prompt sets found. Run compile_prompt_sets() first.")
 
+
+        #if external propagation is turned off, propagation is limited to the slices where the initial dense mask is present. greatly optimizes segmentation
+        if no_external_propagation:
+            z = np.where(np.any(self.mask, axis=(1, 2)))[0]
+            bounds = (z[0], z[-1])
+        else:
+            bounds = None
 
         logits_per_set = []
         weights_used = []
@@ -188,6 +208,7 @@ class Segmentation:
                     p_high=99.0,
                     threshold=threshold,
                     propagation_style=propagation_style,
+                    slice_bounds=bounds
                 )
 
                 self.segs_per_set[set_name] = pred_seg
