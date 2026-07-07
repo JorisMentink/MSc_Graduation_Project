@@ -367,14 +367,11 @@ class UG_prompter():
                     if inner_mm <= 0 or outer_mm <= 0:
                         continue
 
-                    #PROMPTS NOW GENERATE INSIDE UNCERTAINTY BAND FOR BOTH.
                     # Positive prompt inward
-                    pos_mm = mid_mm + outer_normal_yx * (0.5*outer_mm)
-                    #pos_mm = mid_mm + inner_normal_yx * (inner_mm + 2)
+                    pos_mm = mid_mm + inner_normal_yx * (inner_mm + 2)
 
                     # Negative prompt outward
-                    neg_mm = mid_mm + outer_normal_yx * (0.5*outer_mm)
-                    #neg_mm = mid_mm + outer_normal_yx * (outer_mm + 2)
+                    neg_mm = mid_mm + outer_normal_yx * (outer_mm + 2)
 
 
                     pos_yx = np.array([
@@ -388,8 +385,8 @@ class UG_prompter():
                     ])
 
                     #NEW PROMPT VALIDITY CHECKS.
-                    #if not check_prompt_validity(pos_yx, neg_yx, seg, unc_bin):
-                    #    continue
+                    if not check_prompt_validity(pos_yx, neg_yx, seg, unc_bin):
+                       continue
 
                     selected_points_yx.extend([pos_yx, neg_yx])
                     selected_labels.extend([1, 0])

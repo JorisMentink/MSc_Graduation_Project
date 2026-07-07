@@ -13,3 +13,4 @@ checkpoints/*.pt
 *.pt
 data/*
 results/*
+For Midway Presentation/*
