@@ -1,6 +1,6 @@
 from pathlib import Path
 import SimpleITK as sitk
-from pathlib import Path
+from segmentation_util import compute_contour_average
 
 class DataLoader():
     def __init__(self,parentfolder,subject_nr=0,volume_of_interest="CTVT",verbose=False,load_recontours=False):
@@ -66,19 +66,17 @@ class DataLoader():
 
         return self.observer_recontours
     
-    def load_consensus(self):
+    def load_consensus(self,indices = [0,2,3]):
+        """"
+        Computes consensus of recontours for evaluation. Indices determines what recontours are used for consensus.
+        Default value is [0,2,3] which corresponds to observers B, D and E. C was left out for possible cross validation.
+        """
 
-        if self.volume_of_interest == "CTVT":
-            consensus_path = self.subjectfolder / "observerData" / "mask_CTVT_427_step2_STAPLEConsensus.nii.gz"
+        if not hasattr(self, 'observer_recontours'):
+            print("Load_recontours() was not executed yet. Executing now...")
+            self.load_recontours()
 
-        elif self.volume_of_interest == "rectum":
-            consensus_path = self.subjectfolder / "observerData" / "mask_Rectum_step2_STAPLEConsensus.nii.gz"
-
-        if not consensus_path.exists():
-            raise FileNotFoundError(f"Consensus file not found:\n{consensus_path}")
-
-        self.consensus_recontour = (
-            sitk.GetArrayFromImage(sitk.ReadImage(str(consensus_path))) > 0
-        )
-
+        selected_recontours = [self.observer_recontours[i] for i in indices]
+        self.consensus_recontour = compute_contour_average(selected_recontours, self.img_spacing)
+        
         return self.consensus_recontour

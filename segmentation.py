@@ -189,6 +189,7 @@ class Segmentation:
         weights_used = []
 
         self.segs_per_set = {}
+        self.logits_per_set = {}
 
         #Loop through all prompt sets and run individual segmentations
         for num, (set_name, set_data) in enumerate(self.compiled_prompt_sets.items()):
@@ -212,6 +213,7 @@ class Segmentation:
                 )
 
                 self.segs_per_set[set_name] = pred_seg
+                self.logits_per_set[set_name] = pred_logits
 
                 #Store logits for every prompt set for later fusion
                 logits_per_set.append(pred_logits)

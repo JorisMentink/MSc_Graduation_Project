@@ -2,6 +2,7 @@ from contextlib import nullcontext
 from PIL import Image
 import numpy as np
 import torch
+from scipy.ndimage import distance_transform_edt
 
 def normalize_mri_to_uint8(volume: np.ndarray, p_low: float = 1.0, p_high: float = 99.0) -> np.ndarray:
     vol = volume.astype(np.float32)
@@ -454,3 +455,66 @@ def compile_prompt_sets(prompt_dict_list, prompt_set_names, prompt_set_weights =
         prompt_sets_dict[name] = (prompt_dict_list[idx],prompt_set_weights[idx])
 
     return prompt_sets_dict
+
+
+def compute_contour_average(contours, spacing):
+    """
+    Compute an evenly weighted average contour from a list of 3D binary masks
+    using signed distance field (SDF) averaging slice-by-slice.
+    """
+
+    contours = [np.asarray(c).astype(bool) for c in contours]
+    
+    #Compute equal weighting on all contours
+    n_contours = len(contours)
+    weights = np.ones(n_contours, dtype=np.float32) / n_contours
+
+    #Set shape
+    shape = contours[0].shape
+    averaged_slices = []
+
+    for z in range(shape[0]):
+
+        slice_contours = [c[z] for c in contours]
+        #Only look at the contours that have at least one positive pixel in the slic
+        valid_idx = [i for i, c in enumerate(slice_contours) if np.any(c)]
+
+        if len(valid_idx) == 0:
+            averaged_slices.append(np.zeros(shape[1:], dtype=bool))
+            continue
+
+        valid_contours = [slice_contours[i] for i in valid_idx]
+        valid_weights = weights[valid_idx]
+        #If only two contours exist on the slice, normalize weighting to sum to 1.0
+        valid_weights /= valid_weights.sum()
+
+        combined = np.zeros(shape[1:], dtype=bool)
+        for c in valid_contours:
+            combined |= c
+
+        #Use cropping to only perform SDF averaging on the region of interest: Significantly saves computational load and time
+        ys, xs = np.where(combined)
+        pad_y = pad_x = 50
+        y0 = max(0, ys.min() - pad_y)
+        y1 = min(shape[1], ys.max() + pad_y + 1)
+        x0 = max(0, xs.min() - pad_x)
+        x1 = min(shape[2], xs.max() + pad_x + 1)
+        crop = (slice(y0, y1), slice(x0, x1))
+        sdf_sum = np.zeros((y1 - y0, x1 - x0), dtype=np.float32)
+
+        for contour, weight in zip(valid_contours, valid_weights):
+
+            contour_crop = contour[crop]
+
+            outside = distance_transform_edt(~contour_crop, sampling=spacing[1:])
+            inside = distance_transform_edt(contour_crop, sampling=spacing[1:])
+
+            sdf = outside - inside
+            sdf_sum += weight * sdf
+
+        averaged_slice = np.zeros(shape[1:], dtype=bool)
+        averaged_slice[crop] = sdf_sum <= 0
+
+        averaged_slices.append(averaged_slice)
+
+    return np.stack(averaged_slices, axis=0)
