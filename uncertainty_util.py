@@ -387,4 +387,47 @@ def check_prompt_validity(pos_yx, neg_yx, seg, unc_bin):
     )
 
 
+def remove_negative_prompts(prompt_dict):
+    filtered = {}
+
+    for z, prompts in prompt_dict.items():
+
+        points = prompts.get("points")
+        labels = prompts.get("point_labels")
+
+        if points is None or labels is None:
+            filtered[z] = prompts
+            continue
+
+        keep = labels == 1
+
+        filtered[z] = {
+            **prompts,
+            "points": points[keep],
+            "point_labels": labels[keep],
+        }
+
+    return filtered
+
+def remove_positive_prompts(prompt_dict):
+    filtered = {}
+
+    for z, prompts in prompt_dict.items():
+
+        points = prompts.get("points")
+        labels = prompts.get("point_labels")
+
+        if points is None or labels is None:
+            filtered[z] = prompts
+            continue
+
+        keep = labels == 0
+
+        filtered[z] = {
+            **prompts,
+            "points": points[keep],
+            "point_labels": labels[keep],
+        }
+
+    return filtered
 

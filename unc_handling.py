@@ -217,9 +217,9 @@ class UG_prompter():
 
     def generate_prompts_boxes(self, band_threshold=0, pad=0):
         """
-        Generate SAM2 prompts containing:
-        - bounding box around segmentation + thresholded uncertainty region
-        - dense mask prompt from self.mask
+        Generate SAM2 prompts:
+        - Thick uncertainty band  -> bounding box only
+        - Thin/no uncertainty band -> dense mask only
         """
 
         prompts_by_slice = {}
@@ -229,33 +229,39 @@ class UG_prompter():
             if z >= len(self.band_thickness_per_slice):
                 continue
 
-            if self.band_thickness_per_slice[z] <= band_threshold:
-                continue
+            use_bbox = self.band_thickness_per_slice[z] > band_threshold
 
-            unc = self.unc_map_bin[z].astype(bool)
-            mask_2d = self.mask[z].astype(bool)
+            bbox = None
+            mask_input = None
 
-            combined_region = unc | mask_2d
+            if use_bbox:
+                # ---------- Box prompt only ----------
+                mask_2d = self.mask[z].astype(bool)
+                unc = self.unc_map_bin[z].astype(bool)
 
-            if not combined_region.any():
-                continue
+                combined_region = unc | mask_2d
 
-            ys, xs = np.where(combined_region)
+                if combined_region.any():
+                    ys, xs = np.where(combined_region)
 
-            H, W = combined_region.shape
+                    H, W = combined_region.shape
 
-            x0 = max(0, int(xs.min()) - pad)
-            x1 = min(W - 1, int(xs.max()) + pad)
-            y0 = max(0, int(ys.min()) - pad)
-            y1 = min(H - 1, int(ys.max()) + pad)
+                    x0 = max(0, int(xs.min()) - pad)
+                    x1 = min(W - 1, int(xs.max()) + pad)
+                    y0 = max(0, int(ys.min()) - pad)
+                    y1 = min(H - 1, int(ys.max()) + pad)
 
-            bbox = np.array([x0, y0, x1, y1], dtype=np.float32)
+                    bbox = np.array([x0, y0, x1, y1], dtype=np.float32)
+
+            else:
+                # ---------- Dense mask only ----------
+                mask_input = self.mask[z].astype(np.uint8)
 
             prompts_by_slice[z] = {
                 "points": None,
                 "point_labels": None,
                 "bbox": bbox,
-                "mask_input": None,
+                "mask_input": mask_input,
             }
 
         self.prompts_by_slice = prompts_by_slice
@@ -265,7 +271,6 @@ class UG_prompter():
     def generate_prompts_nietjes(
         self,
         unc_band_thr_mm=2.0, #MINIMUM THICKNESS FOR PROMPT GENERATION
-        min_prompt_distance_px=10.0,
         max_prompts_per_slice=1000,
         interpix_dist=2,
         pixel_interval=1,

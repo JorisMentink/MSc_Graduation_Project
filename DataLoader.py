@@ -80,3 +80,18 @@ class DataLoader():
         self.consensus_recontour = compute_contour_average(selected_recontours, self.img_spacing)
         
         return self.consensus_recontour
+
+    def load_summed_recontours(self,indices = [0,2,3]):
+        """"
+        Computes summed recontours for evaluation. Indices determines what recontours are used for summation.
+        Default value is [0,2,3] which corresponds to observers B, D and E. C was left out for possible cross validation.
+        """
+
+        if not hasattr(self, 'observer_recontours'):
+            print("Load_recontours() was not executed yet. Executing now...")
+            self.load_recontours()
+
+        selected_recontours = [self.observer_recontours[i] for i in indices]
+        self.summed_recontour = sum(selected_recontours)
+        
+        return self.summed_recontour

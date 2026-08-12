@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from segmentation import Segmentation
+from DataLoader import DataLoader
 
 
 class Evaluator:
@@ -16,7 +17,7 @@ class Evaluator:
     - a Segmentation instance
     """
 
-    def __init__(self, pred=None, gt=None, subject_name = "x", spacing=(1.0, 1.0, 1.0), segmentation: Segmentation = None):
+    def __init__(self, pred=None, gt=None, subject_name = "x", spacing=(1.0, 1.0, 1.0), segmentation: Segmentation = None, DataLoader: DataLoader = None):
         if segmentation is not None:
             self.pred = segmentation.predicted_seg.astype(bool)
             self.gt = segmentation.gt.astype(bool)
@@ -30,6 +31,11 @@ class Evaluator:
             self.gt = gt.astype(bool)
             self.spacing = tuple(spacing)
             self.subject_name = subject_name
+
+        if DataLoader:
+            self.DataLoader = DataLoader
+        else:
+            self.DataLoader = None
 
         if self.pred.shape != self.gt.shape:
             raise ValueError(
@@ -173,6 +179,7 @@ class Evaluator:
             "ASSD_mm": self.assd(),
             "Dice": self.dice(),
             f"SurfaceDice@{surface_dice_tol}mm": self.surface_dice(surface_dice_tol),
+            f"SurfaceDice@{2.0}mm": self.surface_dice(2.0),
             "CentroidDistance_mm": self.centroid_distance(),
             "PredictionVolume_mm3": self.prediction_volume(),
             "GroundTruthVolume_mm3": self.ground_truth_volume(),
@@ -308,6 +315,7 @@ class SliceEvaluator:
             "ASSD_mm": self.assd(),
             "Dice" : self.dice(),
             f"SurfaceDice@{surface_dice_tol}mm": self.surface_dice(surface_dice_tol),
+            f"SurfaceDice@{2.0}mm": self.surface_dice(2.0),
             "CentroidDistance_mm": self.centroid_distance(),
             "PredictionArea_mm2": self.prediction_area(),
             "GroundTruthArea_mm2": self.ground_truth_area(),
@@ -421,6 +429,7 @@ def evaluate_slice_by_slice(
                     "MSD_mm": np.nan,
                     "ASSD_mm": np.nan,
                     f"SurfaceDice@{surface_dice_tol}mm": np.nan,
+                    f"SurfaceDice@{2.0}mm": np.nan,
                     "CentroidDistance_mm": np.nan,
                 }
 
@@ -483,107 +492,27 @@ def evaluate_slice_by_slice(
 
     return pd.DataFrame(rows)
 
-def compare_to_recontours(
-    pred_seg,
-    recontours,
-    spacing=(1.0, 1.0, 1.0),
-    subject_name="x",
-    observer_names=None,
-    surface_dice_tol=1.0,
-):
+def compute_contour_within_clinical_boundary(pred, summed_recontours):
+    """
+    Custom metric.
+    Defined as the percentage of contour/surface voxels that exist within the clinically accepted margin (exist within the minimal and maximal clinical recontours)
+    """
 
-    if observer_names is None:
-        observer_names = [f"Observer_{i+1}" for i in range(len(recontours))]
+    pred_surf = pred.astype(bool) & ~binary_erosion(pred.astype(bool))
 
-    pred_seg = pred_seg.astype(bool)
-    recontours = [r.astype(bool) for r in recontours]
+    #Define inner and outer bound of the clinically accepted margin
+    outer_mask = summed_recontours >= 1
+    inner_mask = summed_recontours == 4
 
-    rows = []
+    #Create new mask that describes this entire margin
+    inner_surface = inner_mask & ~binary_erosion(inner_mask)
+    clinical_band = (outer_mask & ~inner_mask) | inner_surface
 
-    def evaluate(seg_a, seg_b, name_a, name_b, group):
-
-        evaluator = Evaluator(
-            pred=seg_a,
-            gt=seg_b,
-            spacing=spacing,
-            subject_name=subject_name,
-        )
-
-        metrics = evaluator.compute_all(surface_dice_tol)
-
-        metrics["Group"] = group
-        metrics["Comparison"] = f"{name_a} vs {name_b}"
-
-        return metrics
-
-    # Clinician vs clinician
-    for i in range(len(recontours)):
-        for j in range(i + 1, len(recontours)):
-            rows.append(
-                evaluate(
-                    recontours[i],
-                    recontours[j],
-                    observer_names[i],
-                    observer_names[j],
-                    "Clinician vs clinician",
-                )
-            )
-
-    # Prediction vs clinician
-    for obs_seg, obs_name in zip(recontours, observer_names):
-        rows.append(
-            evaluate(
-                pred_seg,
-                obs_seg,
-                "Prediction",
-                obs_name,
-                "Prediction vs clinician",
-            )
-        )
-
-    # Consensus
-    vote_map = np.sum(np.stack(recontours, axis=0), axis=0)
-    majority_threshold = int(np.ceil(len(recontours) / 2))
-    consensus = vote_map >= majority_threshold
-
-    # Clinician vs consensus
-    for obs_seg, obs_name in zip(recontours, observer_names):
-        rows.append(
-            evaluate(
-                obs_seg,
-                consensus,
-                obs_name,
-                "Consensus",
-                "Clinician vs consensus",
-            )
-        )
-
-    # Prediction vs consensus
-    rows.append(
-        evaluate(
-            pred_seg,
-            consensus,
-            "Prediction",
-            "Consensus",
-            "Prediction vs consensus",
-        )
+    #Calculate relatve number of prediction surface voxels that exist within this margin. Can be transformed to percentage by multiplying by 100.
+    return (
+        np.sum(pred_surf & clinical_band)
+        / np.sum(pred_surf)
     )
-
-    results_df = pd.DataFrame(rows)
-
-    cols = [
-        "Group",
-        "Comparison",
-        f"SurfaceDice@{surface_dice_tol}mm",
-        "ASSD_mm",
-        "HD95_mm",
-        "CentroidDistance_mm",
-        "RelativeVolumeDifference_percent",
-    ]
-
-    results_df = results_df[cols]
-
-    return results_df, consensus, vote_map
 
 
 # NOT PART OF THE CLASS. UTILITY FUNCTION TO SAVE RESULTS TO CSV/EXCEL

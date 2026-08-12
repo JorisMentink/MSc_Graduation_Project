@@ -9,6 +9,7 @@ class Segmentation:
         data: DataLoader,
         checkpoint="checkpoints/MedSAM2_latest.pt",
         cfg="configs/sam2.1_hiera_t512.yaml",
+        use_mask_input_as_output_without_sam=True
     ):
         if not isinstance(data, DataLoader):
             raise TypeError(
@@ -42,6 +43,17 @@ class Segmentation:
             print(f"Building SAM predictor from checkpoint: {checkpoint}")
 
         self.predictor = build_sam2_video_predictor_npz(cfg, checkpoint)
+
+        #Disables mask input as output, which leads to continuous logits instead of -10/10, but was found to not be relevant
+        #self.predictor.use_mask_input_as_output_without_sam = False
+        #Disables object presence predictor, disables the -1024 clipping when model thinks no object is present.
+        #This disabling was excluded due to noisy recontours. NO_OBJ_SCORE was set to -10 instead (conversion inside segmentation.py, not in sam2_base)
+        #self.predictor.pred_obj_scores = False
+
+        print(
+            "use_mask_input_as_output_without_sam:",
+            self.predictor.use_mask_input_as_output_without_sam
+        )
 
     def reduce_to_slice(self, selected_slice):
         "Function that reduces the 3D volume to a single slice for extensive testing."
@@ -170,7 +182,7 @@ class Segmentation:
         return self.predicted_seg
 
 
-    def run_segmentation_sets(self, propagation_style="default", weighting_strategy="average", threshold=0.0,no_external_propagation=False):
+    def run_segmentation_sets(self, propagation_style="default", weighting_strategy="average", threshold=0.0,no_external_propagation=False,no_obj_score=-1024.0,no_obj_replacement=-10.0,):
         """Run segmentation for different prompt sets and combine results using specified logit fusion strategy.
         prompt sets are generated via split_prompts_to_sets, imported from segmentation_util.py"""
 
@@ -211,6 +223,8 @@ class Segmentation:
                     propagation_style=propagation_style,
                     slice_bounds=bounds
                 )
+
+                pred_logits[np.isclose(pred_logits, no_obj_score)] = no_obj_replacement
 
                 self.segs_per_set[set_name] = pred_seg
                 self.logits_per_set[set_name] = pred_logits
